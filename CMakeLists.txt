@@ -7,6 +7,11 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
 include(CTest)
 
+option(JP2EMUELLA_TEST_NITF
+    "Exercise fork-local NITF IC=C8 delegation to JP2Emuella"
+    OFF
+)
+
 find_package(GDAL 3.13 REQUIRED CONFIG)
 find_package(EmuellaJ2K REQUIRED)
 find_package(Threads REQUIRED)
@@ -50,4 +55,20 @@ if(BUILD_TESTING)
     set_tests_properties(jp2emuella_native PROPERTIES
         ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
     )
+
+    if(JP2EMUELLA_TEST_NITF)
+        add_executable(jp2emuella_nitf_tests tests/nitf_tests.cpp)
+        target_compile_features(jp2emuella_nitf_tests PRIVATE cxx_std_17)
+        target_compile_options(jp2emuella_nitf_tests PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>
+        )
+        target_compile_definitions(jp2emuella_nitf_tests PRIVATE
+            JP2EMUELLA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+        )
+        target_link_libraries(jp2emuella_nitf_tests PRIVATE GDAL::GDAL)
+        add_test(NAME jp2emuella_nitf COMMAND jp2emuella_nitf_tests)
+        set_tests_properties(jp2emuella_nitf PROPERTIES
+            ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
+        )
+    endif()
 endif()
