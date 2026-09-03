@@ -87,12 +87,36 @@ Alternatively, place `gdal_JP2Emuella.so` in the directory reported by
 by the platform dynamic loader. Use `GDAL_DRIVER_PATH` to select an uninstalled
 build.
 
-## NITF limitation
+## Fork-local NITF integration
 
-This repository does not modify GDAL's NITF driver. Stock NITF currently
-hard-allowlists `JP2KAK`, `JP2ECW`, `JP2MRSID` and `JP2OPENJPEG` for JPEG 2000
-subdatasets, so `JP2Emuella` cannot yet be selected there. Supporting it needs a
-separate upstream GDAL patch and review; it is not an out-of-tree plugin change.
+Stock GDAL's NITF driver explicitly allows only selected JPEG 2000 drivers to
+inspect an embedded `IC=C8` image segment. The maintained `emuella/gdal` fork
+adds `JP2Emuella` to that narrow list; it does not permit arbitrary drivers to
+inspect embedded content.
+
+Build and install that fork, then point this project at its exact prefix and
+enable the opt-in NITF journey:
+
+```sh
+JP2EMUELLA_TEST_NITF=ON \
+GDAL_CONFIG=/path/to/emuella-gdal-prefix/bin/gdal-config \
+GDAL_PREFIX=/path/to/emuella-gdal-prefix \
+GDALINFO_COMMAND=/path/to/emuella-gdal-prefix/bin/gdalinfo \
+EMUELLA_J2K_SOURCE_DIR=/path/to/emuella-j2k \
+./scripts/check.sh
+```
+
+The journey creates an uncompressed 17x19 NITF skeleton through GDAL, replaces
+its image payload with the existing project-authored raw codestream, and marks
+the image segment as `IC=C8`. It then checks the outer NITF metadata, the nested
+`JP2Emuella` identity, complete pixels, a window and an edge read. A negative
+probe removes `JP2Emuella` temporarily and proves that a deliberately matching
+unlisted driver is not asked to inspect the embedded codestream.
+
+The fork change and this integration test are agent-assisted, fork-local work.
+They must not be submitted to OSGeo/GDAL through an agent workflow; GDAL's
+adopted LLM policy requires any possible future upstream contribution to be
+human-authored, understood and disclosed under that policy.
 
 ## Scope and provenance
 
