@@ -1,8 +1,13 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -11,14 +16,16 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check out the exact codec revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: emuella/emuella-j2k
           ref: 75083930b6e533053b7f5c3c4dda7b4a2c0a0c38
           path: emuella-j2k
+
+      - uses: dtolnay/rust-toolchain@1.97.1
 
       - uses: prefix-dev/setup-pixi@v0.9.1
         with:
@@ -26,11 +33,11 @@ jobs:
           run-install: false
 
       - name: Create the build environment
-        run: pixi init ci-env && cd ci-env && pixi add 'gdal=3.13.0' cmake ninja compilers rust
+        run: pixi init ci-env && cd ci-env && pixi add 'gdal=3.13.0' cmake ninja compilers
 
       - name: Build the codec C ABI
         working-directory: emuella-j2k
-        run: ../ci-env/.pixi/envs/default/bin/cargo build --locked --release -p emuella-j2k-capi
+        run: cargo build --locked --release -p emuella-j2k-capi
 
       - name: Build, test and audit the installed module
         run: |
