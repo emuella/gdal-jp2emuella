@@ -1,0 +1,8 @@
+schema_version = 1
+generator = "emuella-j2k-test-support"
+generator_revision = "75083930b6e533053b7f5c3c4dda7b4a2c0a0c38"
+recipe = "grayscale-gradient-v1"
+dimensions = [17, 19]
+licence = "Apache-2.0"
+timestamped = false
+sha256 = "348a05f5696a49320b584ced0576df7cc5d612e4dcb72514ff79521e139675ca"
