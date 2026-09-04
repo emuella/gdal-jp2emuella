@@ -17,5 +17,10 @@ run:
 ./scripts/check.sh
 ```
 
+The optional fork-local qualification against an externally held GDAL NITF
+fixture accepts only a caller-supplied absolute path through
+`JP2EMUELLA_GDAL_NITF_FIXTURE`. Do not copy that fixture, decoded output
+payloads or other externally owned binary material into this repository.
+
 Please keep changes focused and describe any acceptance condition that remains
 unproved.

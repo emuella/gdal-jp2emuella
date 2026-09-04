@@ -11,6 +11,31 @@ option(JP2EMUELLA_TEST_NITF
     "Exercise fork-local NITF IC=C8 delegation to JP2Emuella"
     OFF
 )
+set(JP2EMUELLA_GDAL_NITF_FIXTURE "" CACHE FILEPATH
+    "Absolute path to GDAL's optional test_jp2_ecw33.ntf qualification fixture"
+)
+
+if(JP2EMUELLA_GDAL_NITF_FIXTURE)
+    if(NOT JP2EMUELLA_TEST_NITF)
+        message(FATAL_ERROR
+            "JP2EMUELLA_GDAL_NITF_FIXTURE requires JP2EMUELLA_TEST_NITF=ON")
+    endif()
+    if(NOT IS_ABSOLUTE "${JP2EMUELLA_GDAL_NITF_FIXTURE}")
+        message(FATAL_ERROR "JP2EMUELLA_GDAL_NITF_FIXTURE must be an absolute path")
+    endif()
+    if(NOT EXISTS "${JP2EMUELLA_GDAL_NITF_FIXTURE}" OR
+       IS_DIRECTORY "${JP2EMUELLA_GDAL_NITF_FIXTURE}")
+        message(FATAL_ERROR
+            "JP2EMUELLA_GDAL_NITF_FIXTURE must name an existing regular file")
+    endif()
+    file(SHA256 "${JP2EMUELLA_GDAL_NITF_FIXTURE}"
+        _jp2emuella_gdal_nitf_fixture_sha256)
+    if(NOT _jp2emuella_gdal_nitf_fixture_sha256 STREQUAL
+       "cc2e868e1b4bb9878703333090d60a5cfa6101ae231fc3bab4233549c154f5ed")
+        message(FATAL_ERROR
+            "JP2EMUELLA_GDAL_NITF_FIXTURE does not match the expected GDAL fixture")
+    endif()
+endif()
 
 find_package(GDAL 3.13 REQUIRED CONFIG)
 find_package(EmuellaJ2K REQUIRED)
@@ -70,5 +95,10 @@ if(BUILD_TESTING)
         set_tests_properties(jp2emuella_nitf PROPERTIES
             ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
         )
+        if(JP2EMUELLA_GDAL_NITF_FIXTURE)
+            set_property(TEST jp2emuella_nitf APPEND PROPERTY ENVIRONMENT
+                "JP2EMUELLA_GDAL_NITF_FIXTURE=${JP2EMUELLA_GDAL_NITF_FIXTURE}"
+            )
+        endif()
     endif()
 endif()

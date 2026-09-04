@@ -23,7 +23,7 @@ concurrent reads do not share workspace state.
 - CMake 3.20 or later and a C++17 compiler
 - Ninja for the documented commands
 - `emuella-j2k-capi` built from exact revision
-  `75083930b6e533053b7f5c3c4dda7b4a2c0a0c38`
+  `de9234cbe6b56579f0eb4b21f5cfadf553c6baba`
 
 The Emuella ABI is pre-1.0. The CMake revision check is performed when
 `EmuellaJ2K_SOURCE_DIR` is supplied; callers providing only installed headers
@@ -112,6 +112,24 @@ the image segment as `IC=C8`. It then checks the outer NITF metadata, the nested
 `JP2Emuella` identity, complete pixels, a window and an edge read. A negative
 probe removes `JP2Emuella` temporarily and proves that a deliberately matching
 unlisted driver is not asked to inspect the embedded codestream.
+
+An additional qualification journey can use the caller's existing copy of
+GDAL's `test_jp2_ecw33.ntf`. Supply its absolute path; configuration verifies
+the expected SHA-256 digest before the test reads it in place:
+
+```sh
+JP2EMUELLA_TEST_NITF=ON \
+JP2EMUELLA_GDAL_NITF_FIXTURE=/absolute/path/to/test_jp2_ecw33.ntf \
+GDAL_CONFIG=/path/to/emuella-gdal-prefix/bin/gdal-config \
+GDAL_PREFIX=/path/to/emuella-gdal-prefix \
+GDALINFO_COMMAND=/path/to/emuella-gdal-prefix/bin/gdalinfo \
+EMUELLA_J2K_SOURCE_DIR=/path/to/emuella-j2k \
+./scripts/check.sh
+```
+
+The external fixture is optional and is never copied into this project or its
+build tree. Without the path, all default and fork-local checks continue to use
+only project-authored inputs.
 
 The fork change and this integration test are agent-assisted, fork-local work.
 They must not be submitted to OSGeo/GDAL through an agent workflow; GDAL's

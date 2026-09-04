@@ -1,11 +1,14 @@
 #include "cpl_conv.h"
 #include "cpl_string.h"
 #include "cpl_vsi.h"
+#include "gdal_alg.h"
 #include "gdal_priv.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -198,6 +201,16 @@ DatasetPtr OpenJP2Emuella(const char *path) {
         path, GDAL_OF_RASTER | GDAL_OF_READONLY, allowed, nullptr, nullptr)));
 }
 
+void CheckNestedJP2Emuella(GDALDataset *dataset) {
+    const char *nestedName =
+        dataset->GetMetadataItem("JPEG2000_DATASET_NAME", "DEBUG");
+    Check(nestedName != nullptr, "nested JPEG 2000 dataset name is missing");
+    auto nested = OpenJP2Emuella(nestedName);
+    Check(nested != nullptr &&
+              std::string(nested->GetDriverName()) == "JP2Emuella",
+          "NITF image segment did not select JP2Emuella");
+}
+
 void TestNITFDecode(const std::vector<std::uint8_t> &fixture) {
     constexpr const char *path = "/vsimem/jp2emuella-c8.ntf";
     PutVsiMem(path, fixture);
@@ -212,14 +225,7 @@ void TestNITFDecode(const std::vector<std::uint8_t> &fixture) {
     Check(compression != nullptr && std::string(compression) == "C8",
           "NITF compression metadata mismatch");
 
-    const char *nestedName =
-        dataset->GetMetadataItem("JPEG2000_DATASET_NAME", "DEBUG");
-    Check(nestedName != nullptr, "nested JPEG 2000 dataset name is missing");
-    auto nested = OpenJP2Emuella(nestedName);
-    Check(nested != nullptr &&
-              std::string(nested->GetDriverName()) == "JP2Emuella",
-          "NITF image segment did not select JP2Emuella");
-    nested.reset();
+    CheckNestedJP2Emuella(dataset.get());
 
     std::vector<std::uint8_t> pixels(17 * 19);
     Check(dataset->GetRasterBand(1)->RasterIO(GF_Read, 0, 0, 17, 19,
@@ -251,6 +257,68 @@ void TestNITFDecode(const std::vector<std::uint8_t> &fixture) {
           "NITF edge read failed");
     dataset.reset();
     VSIUnlink(path);
+}
+
+void TestExternalGDALNITF(const char *path) {
+    auto dataset = OpenNITF(path);
+    Check(dataset != nullptr, "external GDAL NITF fixture did not open");
+    Check(std::string(dataset->GetDriverName()) == "NITF",
+          "unexpected external fixture outer driver");
+    Check(dataset->GetRasterXSize() == 200 && dataset->GetRasterYSize() == 100,
+          "unexpected external fixture raster dimensions");
+    Check(dataset->GetRasterCount() == 3,
+          "unexpected external fixture band count");
+    const char *compression = dataset->GetMetadataItem("NITF_IC");
+    Check(compression != nullptr && std::string(compression) == "C8",
+          "external fixture compression metadata mismatch");
+    CheckNestedJP2Emuella(dataset.get());
+
+    constexpr std::array<int, 3> expectedChecksums = {32398, 42502, 38882};
+    for (int bandIndex = 0; bandIndex < 3; ++bandIndex) {
+        auto *band = dataset->GetRasterBand(bandIndex + 1);
+        Check(GDALChecksumImage(band, 0, 0, 200, 100) ==
+                  expectedChecksums[static_cast<std::size_t>(bandIndex)],
+              "external fixture full-band checksum mismatch");
+    }
+
+    constexpr int windowX = 37;
+    constexpr int windowY = 23;
+    constexpr int windowWidth = 61;
+    constexpr int windowHeight = 29;
+    std::vector<std::uint8_t> window(
+        static_cast<std::size_t>(windowWidth * windowHeight * 3));
+    Check(dataset->RasterIO(GF_Read, windowX, windowY, windowWidth,
+                            windowHeight, window.data(), windowWidth,
+                            windowHeight, GDT_Byte, 3, nullptr, 3,
+                            3 * windowWidth, 1, nullptr) == CE_None,
+          "external fixture window read failed");
+    // GDAL created this fixture from horizontal ramps x, x + 20 and x + 30.
+    // This interior window is unchanged by the fixture's lossy encoding.
+    constexpr std::array<int, 3> bandOffsets = {0, 20, 30};
+    for (int y = 0; y < windowHeight; ++y) {
+        for (int x = 0; x < windowWidth; ++x) {
+            const auto pixelIndex =
+                static_cast<std::size_t>((y * windowWidth + x) * 3);
+            for (int bandIndex = 0; bandIndex < 3; ++bandIndex) {
+                const auto expected = static_cast<std::uint8_t>(
+                    windowX + x +
+                    bandOffsets[static_cast<std::size_t>(bandIndex)]);
+                Check(
+                    window[pixelIndex + static_cast<std::size_t>(bandIndex)] ==
+                        expected,
+                    "external fixture window pixel mismatch");
+            }
+        }
+    }
+
+    std::array<std::uint8_t, 3> edge = {0, 0, 0};
+    Check(dataset->RasterIO(GF_Read, 199, 99, 1, 1, edge.data(), 1, 1, GDT_Byte,
+                            3, nullptr, 3, 3, 1, nullptr) == CE_None,
+          "external fixture edge read failed");
+    constexpr std::array<std::uint8_t, 3> expectedEdge = {198, 218, 228};
+    Check(edge == expectedEdge,
+          "external fixture edge pixel mismatch: " + std::to_string(edge[0]) +
+              ", " + std::to_string(edge[1]) + ", " + std::to_string(edge[2]));
 }
 
 std::atomic<int> trapIdentifications{0};
@@ -310,6 +378,10 @@ int main() {
         const auto fixture = BuildNITFC8Fixture(ReadFixture());
         TestNITFDecode(fixture);
         TestNarrowAllowList(fixture);
+        if (const char *externalFixture =
+                std::getenv("JP2EMUELLA_GDAL_NITF_FIXTURE");
+            externalFixture != nullptr && externalFixture[0] != '\0')
+            TestExternalGDALNITF(externalFixture);
         GDALDestroyDriverManager();
         std::cout << "JP2Emuella NITF tests passed\n";
         return 0;
