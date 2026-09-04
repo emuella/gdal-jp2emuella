@@ -7,7 +7,7 @@
 #   EmuellaJ2K_SOURCE_DIR   optional source checkout used to verify the revision
 
 set(EmuellaJ2K_REQUIRED_REVISION
-    "75083930b6e533053b7f5c3c4dda7b4a2c0a0c38"
+    "de9234cbe6b56579f0eb4b21f5cfadf553c6baba"
     CACHE STRING "Required emuella-j2k source revision")
 set(EmuellaJ2K_SOURCE_DIR "" CACHE PATH
     "Optional emuella-j2k checkout for exact revision verification")
