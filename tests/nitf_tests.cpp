@@ -40,6 +40,36 @@ struct DatasetCloser {
 };
 using DatasetPtr = std::unique_ptr<GDALDataset, DatasetCloser>;
 
+class AlternativeJ2KDriverIsolation {
+  public:
+    AlternativeJ2KDriverIsolation() {
+        constexpr std::array<const char *, 4> driverNames = {
+            "JP2KAK", "JP2ECW", "JP2MRSID", "JP2OPENJPEG"};
+        auto *manager = GetGDALDriverManager();
+        for (const auto *name : driverNames) {
+            if (auto *driver = manager->GetDriverByName(name)) {
+                drivers_[count_++] = driver;
+                manager->DeregisterDriver(driver);
+            }
+        }
+    }
+
+    ~AlternativeJ2KDriverIsolation() {
+        auto *manager = GetGDALDriverManager();
+        for (std::size_t index = 0; index < count_; ++index)
+            manager->RegisterDriver(drivers_[index]);
+    }
+
+    AlternativeJ2KDriverIsolation(const AlternativeJ2KDriverIsolation &) =
+        delete;
+    AlternativeJ2KDriverIsolation &
+    operator=(const AlternativeJ2KDriverIsolation &) = delete;
+
+  private:
+    std::array<GDALDriver *, 4> drivers_{};
+    std::size_t count_ = 0;
+};
+
 void Check(bool condition, const std::string &message) {
     if (!condition)
         throw std::runtime_error(message);
@@ -376,12 +406,18 @@ int main() {
         Check(GetGDALDriverManager()->GetDriverByName("JP2Emuella") != nullptr,
               "JP2Emuella plugin did not autoload");
         const auto fixture = BuildNITFC8Fixture(ReadFixture());
-        TestNITFDecode(fixture);
-        TestNarrowAllowList(fixture);
-        if (const char *externalFixture =
-                std::getenv("JP2EMUELLA_GDAL_NITF_FIXTURE");
-            externalFixture != nullptr && externalFixture[0] != '\0')
-            TestExternalGDALNITF(externalFixture);
+        {
+            // NITF tries these four drivers before JP2Emuella. Removing them
+            // makes every successful outer read prove actual Emuella
+            // delegation rather than merely proving a separate reopen works.
+            AlternativeJ2KDriverIsolation isolateAlternatives;
+            TestNITFDecode(fixture);
+            TestNarrowAllowList(fixture);
+            if (const char *externalFixture =
+                    std::getenv("JP2EMUELLA_GDAL_NITF_FIXTURE");
+                externalFixture != nullptr && externalFixture[0] != '\0')
+                TestExternalGDALNITF(externalFixture);
+        }
         GDALDestroyDriverManager();
         std::cout << "JP2Emuella NITF tests passed\n";
         return 0;
