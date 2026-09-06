@@ -276,7 +276,12 @@ class JP2EmuellaRasterBand final : public GDALPamRasterBand {
             CPLError(CE_Failure, CPLE_NotSupported, "JP2Emuella is read-only");
             return CE_Failure;
         }
-        if (width == bufferWidth && height == bufferHeight &&
+        // GDAL owns fractional-window resampling and progress/cancellation.
+        const bool needsGenericIO =
+            extraArg != nullptr &&
+            (extraArg->bFloatingPointWindowValidity ||
+             extraArg->pfnProgress != nullptr);
+        if (!needsGenericIO && width == bufferWidth && height == bufferHeight &&
             bufferType == GDT_Byte && pixelSpace == 1 &&
             lineSpace >= static_cast<GSpacing>(width)) {
             return static_cast<JP2EmuellaDataset *>(poDS)->DecodeRegion(

@@ -134,6 +134,89 @@ void TestMetadataAndPixels(const std::vector<std::uint8_t> &fixture) {
     VSIUnlink("/vsimem/jp2emuella-valid.j2k");
 }
 
+void TestExtraArgs(const std::vector<std::uint8_t> &fixture) {
+    PutVsiMem("/vsimem/jp2emuella-extra-args.j2k", fixture);
+    auto dataset = Open("/vsimem/jp2emuella-extra-args.j2k");
+    Check(dataset != nullptr, "extra-argument fixture did not open");
+    auto *band = dataset->GetRasterBand(1);
+    for (const auto algorithm : {GRIORA_NearestNeighbour, GRIORA_Bilinear}) {
+        for (const int bufferWidth : {5, 3}) {
+            GDALRasterIOExtraArg extra;
+            INIT_RASTERIO_EXTRA_ARG(extra);
+            extra.eResampleAlg = algorithm;
+            extra.bFloatingPointWindowValidity = TRUE;
+            extra.dfXOff = 3.75;
+            extra.dfYOff = 7.75;
+            extra.dfXSize = 5.0;
+            extra.dfYSize = 4.0;
+            const auto count = static_cast<size_t>(bufferWidth * 4);
+            std::vector<std::uint8_t> actual(count);
+            std::vector<std::uint8_t> generic(count * 2, 0xa5);
+            // A two-byte pixel stride forces the generic GDAL block path.
+            auto referenceExtra = extra;
+            Check(band->RasterIO(GF_Read, 3, 7, 5, 4, generic.data(),
+                                 bufferWidth, 4, GDT_Byte, 2, bufferWidth * 2,
+                                 &referenceExtra) == CE_None,
+                  "generic fractional-window read failed");
+            Check(band->RasterIO(GF_Read, 3, 7, 5, 4, actual.data(),
+                                 bufferWidth, 4, GDT_Byte, 1, bufferWidth,
+                                 &extra) == CE_None,
+                  "fractional-window read failed");
+            bool differsFromInteger = false;
+            for (size_t index = 0; index < count; ++index) {
+                Check(actual[index] == generic[index * 2],
+                      "fractional window differs from generic GDAL path");
+                Check(generic[index * 2 + 1] == 0xa5,
+                      "generic read overwrote pixel padding");
+                if (bufferWidth == 5 &&
+                    generic[index * 2] !=
+                        Expected(3 + static_cast<int>(index % 5),
+                                 7 + static_cast<int>(index / 5)))
+                    differsFromInteger = true;
+            }
+            Check(bufferWidth != 5 || differsFromInteger,
+                  "fractional probe did not distinguish the integer window");
+        }
+    }
+
+    struct Progress {
+        int calls = 0;
+        double last = 0;
+        bool cancel = false;
+    };
+    for (const bool cancel : {false, true}) {
+        Progress progress;
+        progress.cancel = cancel;
+        GDALRasterIOExtraArg extra;
+        INIT_RASTERIO_EXTRA_ARG(extra);
+        extra.pfnProgress = [](double complete, const char *, void *data) {
+            auto &state = *static_cast<Progress *>(data);
+            ++state.calls;
+            state.last = complete;
+            return state.cancel ? FALSE : TRUE;
+        };
+        extra.pProgressData = &progress;
+        std::vector<std::uint8_t> pixels(20);
+        CPLPushErrorHandler(CPLQuietErrorHandler);
+        const auto result = band->RasterIO(GF_Read, 3, 7, 5, 4, pixels.data(),
+                                            5, 4, GDT_Byte, 1, 5, &extra);
+        CPLPopErrorHandler();
+        Check(progress.calls > 0, "progress callback was bypassed");
+        Check(result == (cancel ? CE_Failure : CE_None),
+              "progress cancellation result mismatch");
+        if (!cancel) {
+            Check(progress.last == 1.0, "progress did not reach completion");
+            for (int y = 0; y < 4; ++y)
+                for (int x = 0; x < 5; ++x)
+                    Check(pixels[static_cast<size_t>(y * 5 + x)] ==
+                              Expected(x + 3, y + 7),
+                          "progress read pixel mismatch");
+        }
+    }
+    dataset.reset();
+    VSIUnlink("/vsimem/jp2emuella-extra-args.j2k");
+}
+
 void TestSubfile(const std::vector<std::uint8_t> &fixture) {
     std::vector<std::uint8_t> container(23 + fixture.size() + 11, 0x35);
     std::copy(fixture.begin(), fixture.end(), container.begin() + 23);
@@ -276,6 +359,7 @@ int main() {
 
         const auto fixture = ReadFixture();
         TestMetadataAndPixels(fixture);
+        TestExtraArgs(fixture);
         TestSubfile(fixture);
         TestRejections(fixture);
         TestRepeatedConcurrentAndLifecycle(fixture);

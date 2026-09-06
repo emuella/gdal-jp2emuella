@@ -17,6 +17,12 @@ serialised around seek/read pairs and contained by a `noexcept` callback. Each
 active region decode owns a separate Emuella workspace, so repeated and
 concurrent reads do not share workspace state.
 
+Direct region reads are limited to integer windows with matching source and
+buffer dimensions, Byte output and suitable strides. Requests with a valid
+floating-point source window or a progress callback use GDAL's generic block
+path to preserve resampling, progress and cancellation semantics. Cancellation
+is observed at GDAL progress checkpoints, not within a codec block decode.
+
 ## Requirements
 
 - GDAL 3.13 (development files and runtime)
@@ -54,7 +60,8 @@ ctest --test-dir build --output-on-failure
 The native test executable links to GDAL only. CTest sets `GDAL_DRIVER_PATH` to
 the module output directory, so driver registration and every decode exercise
 normal GDAL plugin autoloading rather than a test-only static link. Tests cover
-metadata, full and windowed pixels, edge reads, `/vsimem/`, `/vsisubfile/`,
+metadata, full and windowed pixels, fractional-window nearest-neighbour and
+bilinear reads against the generic GDAL path, progress and cancellation, edge reads, `/vsimem/`, `/vsisubfile/`,
 malformed and unsupported inputs, concurrent reads and open/close lifecycle.
 
 `scripts/check.sh` requires `EMUELLA_J2K_SOURCE_DIR`. It derives the codec
