@@ -44,7 +44,7 @@ close a dataset only after its readers have finished.
 - CMake 3.20 or later and a C++17 compiler
 - Ninja for the documented commands
 - `emuella-j2k-capi` built from exact revision
-  `de9234cbe6b56579f0eb4b21f5cfadf553c6baba`
+  `553b941911e35863c1eed7f23be8a41e1c4caa84`
 
 The Emuella ABI is pre-1.0. The CMake revision check is performed when
 `EmuellaJ2K_SOURCE_DIR` is supplied; callers providing only installed headers
@@ -157,6 +157,9 @@ counts or subtracted to estimate total allocation. No field claims to measure
 all allocator calls, total allocated bytes, process RSS, or peak live memory.
 The benchmark exposes the initial snapshot so source inspection is not silently
 attributed to the first region read.
+
+The [recorded RGB benchmark](docs/rgb-region-benchmark.md) contains a complete
+comparison against the previous plugin, with raw timing and work observations.
 
 ## Install and run
 
