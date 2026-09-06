@@ -81,6 +81,24 @@ if(BUILD_TESTING)
         ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
     )
 
+    foreach(rgb_target IN ITEMS jp2emuella_rgb_tests jp2emuella_rgb_benchmark)
+        string(REPLACE "jp2emuella_" "" rgb_source "${rgb_target}")
+        add_executable(${rgb_target} tests/${rgb_source}.cpp)
+        target_compile_features(${rgb_target} PRIVATE cxx_std_17)
+        target_compile_options(${rgb_target} PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>
+        )
+        target_compile_definitions(${rgb_target} PRIVATE
+            JP2EMUELLA_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+        )
+        target_link_libraries(${rgb_target} PRIVATE GDAL::GDAL Threads::Threads)
+    endforeach()
+    add_test(NAME jp2emuella_rgb COMMAND jp2emuella_rgb_tests)
+    add_test(NAME jp2emuella_rgb_benchmark_smoke COMMAND jp2emuella_rgb_benchmark 1)
+    set_tests_properties(jp2emuella_rgb jp2emuella_rgb_benchmark_smoke PROPERTIES
+        ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
+    )
+
     if(JP2EMUELLA_TEST_NITF)
         add_executable(jp2emuella_nitf_tests tests/nitf_tests.cpp)
         target_compile_features(jp2emuella_nitf_tests PRIVATE cxx_std_17)
