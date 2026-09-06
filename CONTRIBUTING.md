@@ -2,8 +2,9 @@
 
 Contributions should keep this driver out of the GDAL source tree and use only
 public GDAL interfaces. Keep codec interaction behind `emuella_j2k.h`, preserve
-the decoder/source lifetime relationship, and give every simultaneous decode
-its own workspace.
+the decoder/source lifetime relationship, and serialise each dataset's codec
+calls and output copies around its owned workspace. Keep the decode-mutex-before-VSI-mutex lock order; the source
+callback must never take the decode mutex.
 
 Use Australian English in prose and comments while preserving established API,
 standards and product names. Do not add protected corpus material or source

@@ -1,0 +1,13 @@
+schema_version = 1
+generator = "emuella-j2k-test-support::native_planes::reversible_mct_region_fixture"
+generator_revision = "5e090873fd82c6761eacbe5e5c2fcf8c28169a71"
+recipe = "reversible-mct-region-fixture-tnsot-one"
+dimensions = [256, 192]
+components = 3
+licence = "Apache-2.0"
+timestamped = false
+sha256 = "6e0b2c084490ea9b3898ee7d78602243de850212c62a35a2340ddf1428e4b140"
+# The fixture function and its project-authored encoder predate this plugin
+# change. Write the function's tnsot_one field directly as the .j2k file.
+# tests/rgb_support.h independently evaluates the same authored RGB formulae;
+# expected pixels are never obtained from a decoder.

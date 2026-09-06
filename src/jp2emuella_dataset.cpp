@@ -1,11 +1,13 @@
 #include "cpl_conv.h"
 #include "cpl_error.h"
+#include "cpl_string.h"
 #include "cpl_vsi.h"
 #include "emuella_j2k.h"
 #include "gdal_pam.h"
 #include "gdal_priv.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -84,6 +86,20 @@ class JP2EmuellaDataset final : public GDALPamDataset {
     std::mutex fileMutex_;
     EmuellaJ2kSourceV0 source_{};
     DecoderPtr decoder_;
+    // Lock order: decodeMutex_ then fileMutex_. The source callback only takes
+    // fileMutex_, and never re-enters GDAL or the workspace. Handles are destroyed
+    // before their source context and VSI file.
+    std::mutex decodeMutex_;
+    WorkspacePtr workspace_;
+    std::vector<std::uint8_t> scatterPlane_;
+    std::uint64_t scatterGrowths_ = 0;
+    bool diagnostics_ = false;
+    std::uint64_t sourceBytes_ = 0;
+    std::uint64_t decodeCount_ = 0;
+    std::uint64_t workspaceCreations_ = 0;
+    EmuellaJ2kDecodeWorkV0 work_{};
+    char **diagnosticMetadata_ = nullptr;
+
     std::uint32_t imageOriginX_ = 0;
     std::uint32_t imageOriginY_ = 0;
 
@@ -103,6 +119,8 @@ class JP2EmuellaDataset final : public GDALPamDataset {
                 return EMUELLA_J2K_STATUS_OK;
 
             std::lock_guard<std::mutex> lock(dataset->fileMutex_);
+            if (dataset->diagnostics_)
+                dataset->sourceBytes_ += length;
             if (VSIFSeekL(dataset->file_.get(),
                           static_cast<vsi_l_offset>(offset), SEEK_SET) != 0)
                 return EMUELLA_J2K_STATUS_SOURCE_IO;
@@ -116,8 +134,8 @@ class JP2EmuellaDataset final : public GDALPamDataset {
     }
 
   public:
-    JP2EmuellaDataset(VSIFilePtr file, std::uint64_t length)
-        : file_(std::move(file)), length_(length) {
+    JP2EmuellaDataset(VSIFilePtr file, std::uint64_t length, bool diagnostics)
+        : file_(std::move(file)), length_(length), diagnostics_(diagnostics) {
         source_.struct_size = sizeof(source_);
         source_.abi_version = EMUELLA_J2K_ABI_VERSION;
         source_.length = length_;
@@ -127,107 +145,282 @@ class JP2EmuellaDataset final : public GDALPamDataset {
 
     ~JP2EmuellaDataset() override {
         FlushCache(true);
+        workspace_.reset();
         decoder_.reset();
+        CSLDestroy(diagnosticMetadata_);
         file_.reset();
     }
 
-    CPLErr DecodeRegion(int component, int x, int y, int width, int height,
-                        std::uint8_t *destination, size_t stride) {
-        if (component < 0 || component >= GetRasterCount() || x < 0 || y < 0 ||
-            width <= 0 || height <= 0 || x > nRasterXSize - width ||
-            y > nRasterYSize - height || destination == nullptr ||
-            stride < static_cast<size_t>(width)) {
+    CSLConstList GetMetadata(const char *domain = "") override {
+        if (domain == nullptr || !EQUAL(domain, "EMUELLA_DIAGNOSTICS"))
+            return GDALPamDataset::GetMetadata(domain);
+        if (!diagnostics_)
+            return nullptr;
+        std::lock_guard<std::mutex> decodeLock(decodeMutex_);
+        std::lock_guard<std::mutex> fileLock(fileMutex_);
+        auto set = [&](const char *key, std::uint64_t value) {
+            diagnosticMetadata_ = CSLSetNameValue(
+                diagnosticMetadata_, key, std::to_string(value).c_str());
+        };
+        set("SCHEMA_VERSION", 1);
+        set("SOURCE_BYTES_REQUESTED", sourceBytes_);
+        set("DECODE_COUNT", decodeCount_);
+        set("WORKSPACE_CREATIONS", workspaceCreations_);
+        set("SCATTER_GROWTH_REQUESTS", scatterGrowths_);
+        set("PEAK_SCATTER_CAPACITY_BYTES", scatterPlane_.capacity());
+#define WORK_SUM(name) set(#name, work_.name)
+        WORK_SUM(preparation_count);
+        WORK_SUM(code_blocks_decoded);
+        WORK_SUM(tier1_coefficients);
+        WORK_SUM(dwt_samples);
+        WORK_SUM(synthesis_coefficients_loaded);
+        WORK_SUM(synthesis_horizontal_values);
+        WORK_SUM(synthesis_vertical_values);
+        WORK_SUM(synthesis_lifting_updates);
+        WORK_SUM(synthesis_output_samples);
+        WORK_SUM(windowed_synthesis_component_tiles);
+        WORK_SUM(full_synthesis_component_tiles);
+        WORK_SUM(output_allocation_bytes);
+        WORK_SUM(output_allocation_count);
+#undef WORK_SUM
+#define WORK_PEAK(name) set("PEAK_" #name, work_.name)
+        WORK_PEAK(output_capacity_bytes);
+        WORK_PEAK(workspace_retained_heap_bytes);
+        WORK_PEAK(coefficient_capacity);
+        WORK_PEAK(segment_capacity);
+        WORK_PEAK(transform_capacity);
+        WORK_PEAK(full_coefficient_plane_capacity);
+        WORK_PEAK(full_transform_scratch_capacity);
+#undef WORK_PEAK
+        return diagnosticMetadata_;
+    }
+
+    const char *GetMetadataItem(const char *name,
+                                const char *domain = "") override {
+        if (domain != nullptr && EQUAL(domain, "EMUELLA_DIAGNOSTICS"))
+            return CSLFetchNameValue(GetMetadata(domain), name);
+        return GDALPamDataset::GetMetadataItem(name, domain);
+    }
+
+    // Only monotone, non-overlapping planar or pixel-interleaved layouts are
+    // admitted. Bound the complete offset by ptrdiff_t before pointer arithmetic.
+    static bool DirectLayout(int width, int height, int bands,
+                             GSpacing pixel, GSpacing line, GSpacing band) {
+        if (width <= 0 || height <= 0 || bands <= 0 || pixel <= 0 ||
+            line <= 0 || band <= 0)
+            return false;
+        const auto limit = static_cast<std::uint64_t>(
+            std::numeric_limits<std::ptrdiff_t>::max());
+        std::uint64_t extent = 1;
+        auto add = [&](int count, GSpacing stride) {
+            const auto step = static_cast<std::uint64_t>(stride);
+            if (step > limit || (count > 1 &&
+                step > (limit - extent) / static_cast<unsigned>(count - 1)))
+                return false;
+            extent += static_cast<unsigned>(count - 1) * step;
+            return true;
+        };
+        if (!add(width, pixel) || !add(height, line) || !add(bands, band))
+            return false;
+        const auto rowExtent = static_cast<std::uint64_t>(width - 1) *
+                               static_cast<std::uint64_t>(pixel) + 1;
+        const auto planeExtent = static_cast<std::uint64_t>(height - 1) *
+                                 static_cast<std::uint64_t>(line) + rowExtent;
+        const auto sampleExtent = static_cast<std::uint64_t>(bands - 1) *
+                                  static_cast<std::uint64_t>(band) + 1;
+        return (static_cast<std::uint64_t>(line) >= rowExtent &&
+                (bands == 1 || static_cast<std::uint64_t>(band) >= planeExtent)) ||
+               (static_cast<std::uint64_t>(pixel) >= sampleExtent &&
+                static_cast<std::uint64_t>(line) >= rowExtent + sampleExtent - 1);
+    }
+
+    CPLErr DecodeBands(int x, int y, int width, int height, void *destination,
+                       int bandCount, const int *bandMap, GSpacing pixelSpace,
+                       GSpacing lineSpace, GSpacing bandSpace) try {
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
+            x > nRasterXSize - width || y > nRasterYSize - height ||
+            destination == nullptr || bandMap == nullptr ||
+            !DirectLayout(width, height, bandCount, pixelSpace, lineSpace, bandSpace)) {
             CPLError(CE_Failure, CPLE_IllegalArg,
-                     "JP2Emuella received an invalid decode region");
+                     "JP2Emuella received an invalid decode region or layout");
             return CE_Failure;
         }
-        const auto rowBytes = static_cast<size_t>(width);
-        const auto precedingRows = static_cast<size_t>(height - 1);
-        if (precedingRows != 0 &&
-            stride > (std::numeric_limits<size_t>::max() - rowBytes) /
-                         precedingRows) {
-            CPLError(CE_Failure, CPLE_IllegalArg,
-                     "JP2Emuella decode destination extent overflows");
-            return CE_Failure;
-        }
-        const size_t capacity = precedingRows * stride + rowBytes;
-
-        EmuellaJ2kWorkspace *rawWorkspace = nullptr;
-        EmuellaJ2kError *rawError = nullptr;
-        auto status = emuella_j2k_workspace_create(&rawWorkspace, &rawError);
-        WorkspacePtr workspace(rawWorkspace);
-        if (!CodecCallSucceeded(status, rawError, "workspace creation"))
-            return CE_Failure;
-
-        EmuellaJ2kDecodeRequestV0 request{};
+        std::lock_guard<std::mutex> lock(decodeMutex_);
+        EmuellaJ2kDecodeComponentsRequestV0 request{};
         request.struct_size = sizeof(request);
         request.abi_version = EMUELLA_J2K_ABI_VERSION;
-        request.component = static_cast<std::uint16_t>(component);
         request.x = static_cast<std::uint32_t>(x);
         request.y = static_cast<std::uint32_t>(y);
         request.width = static_cast<std::uint32_t>(width);
         request.height = static_cast<std::uint32_t>(height);
-
+        request.collect_work = diagnostics_ ? 1 : 0;
+        std::vector<std::uint16_t> outputIndices;
+        outputIndices.reserve(static_cast<size_t>(bandCount));
+        for (int band = 0; band < bandCount; ++band) {
+            if (bandMap[band] < 1 || bandMap[band] > GetRasterCount()) {
+                CPLError(CE_Failure, CPLE_IllegalArg,
+                         "JP2Emuella received an invalid band index");
+                return CE_Failure;
+            }
+            const auto component = static_cast<std::uint16_t>(bandMap[band] - 1);
+            std::uint16_t index = 0;
+            while (index < request.component_count &&
+                   request.components[index] != component)
+                ++index;
+            if (index == request.component_count) {
+                if (request.component_count == 4)
+                    return CE_Failure; // Caller checks the distinct-band limit.
+                request.components[request.component_count++] = component;
+            }
+            outputIndices.push_back(index);
+        }
+        EmuellaJ2kError *rawError = nullptr;
+        if (!workspace_) {
+            EmuellaJ2kWorkspace *rawWorkspace = nullptr;
+            const auto status = emuella_j2k_workspace_create(&rawWorkspace, &rawError);
+            workspace_.reset(rawWorkspace);
+            if (!CodecCallSucceeded(status, rawError, "workspace creation"))
+                return CE_Failure;
+            if (diagnostics_)
+                ++workspaceCreations_;
+        }
         EmuellaJ2kImage *rawImage = nullptr;
         rawError = nullptr;
-        status = emuella_j2k_decode_component_region(
-            decoder_.get(), workspace.get(), &request, &rawImage, &rawError);
+        auto status = emuella_j2k_decode_components_region(
+            decoder_.get(), workspace_.get(), &request, &rawImage, &rawError);
         ImagePtr image(rawImage);
         if (!CodecCallSucceeded(status, rawError, "region decode"))
             return CE_Failure;
-
-        EmuellaJ2kImageInfoV0 info{};
-        info.struct_size = sizeof(info);
-        info.abi_version = EMUELLA_J2K_ABI_VERSION;
-        rawError = nullptr;
-        status = emuella_j2k_image_info(image.get(), &info, &rawError);
-        if (!CodecCallSucceeded(status, rawError, "decoded image inspection"))
-            return CE_Failure;
-        if (info.width != static_cast<std::uint32_t>(width) ||
-            info.height != static_cast<std::uint32_t>(height) ||
-            info.component_count != 1 || info.bits_per_sample != 8 ||
-            info.is_signed != 0 || info.byte_order != EMUELLA_J2K_ENDIAN_NONE) {
-            CPLError(CE_Failure, CPLE_AppDefined,
-                     "JP2Emuella codec returned incompatible decoded geometry");
-            return CE_Failure;
+        // Validate every output before touching the GDAL destination.
+        for (std::uint16_t index = 0; index < request.component_count; ++index) {
+            EmuellaJ2kComponentInfoV0 info{};
+            info.struct_size = sizeof(info);
+            info.abi_version = EMUELLA_J2K_ABI_VERSION;
+            rawError = nullptr;
+            status = emuella_j2k_image_component_info_at(image.get(), index,
+                                                        &info, &rawError);
+            if (!CodecCallSucceeded(status, rawError, "decoded component inspection"))
+                return CE_Failure;
+            if (info.source_component != request.components[index] ||
+                info.bits_per_sample != 8 || info.is_signed != 0 ||
+                info.byte_order != EMUELLA_J2K_ENDIAN_NONE ||
+                info.horizontal_separation != 1 || info.vertical_separation != 1 ||
+                info.width != request.width || info.height != request.height ||
+                info.x_origin != static_cast<std::uint64_t>(imageOriginX_) + request.x ||
+                info.y_origin != static_cast<std::uint64_t>(imageOriginY_) + request.y) {
+                CPLError(CE_Failure, CPLE_AppDefined,
+                         "JP2Emuella codec returned an incompatible component layout");
+                return CE_Failure;
+            }
         }
-
-        EmuellaJ2kComponentInfoV0 componentInfo{};
-        componentInfo.struct_size = sizeof(componentInfo);
-        componentInfo.abi_version = EMUELLA_J2K_ABI_VERSION;
-        rawError = nullptr;
-        status = emuella_j2k_image_component_info(image.get(), &componentInfo,
-                                                  &rawError);
-        if (!CodecCallSucceeded(status, rawError,
-                                "decoded component inspection"))
-            return CE_Failure;
-        const auto expectedOriginX = static_cast<std::uint64_t>(imageOriginX_) +
-                                     static_cast<std::uint32_t>(x);
-        const auto expectedOriginY = static_cast<std::uint64_t>(imageOriginY_) +
-                                     static_cast<std::uint32_t>(y);
-        if (componentInfo.source_component !=
-                static_cast<std::uint16_t>(component) ||
-            componentInfo.bits_per_sample != 8 ||
-            componentInfo.is_signed != 0 ||
-            componentInfo.byte_order != EMUELLA_J2K_ENDIAN_NONE ||
-            componentInfo.horizontal_separation != 1 ||
-            componentInfo.vertical_separation != 1 ||
-            componentInfo.width != static_cast<std::uint32_t>(width) ||
-            componentInfo.height != static_cast<std::uint32_t>(height) ||
-            componentInfo.x_origin != expectedOriginX ||
-            componentInfo.y_origin != expectedOriginY) {
-            CPLError(
-                CE_Failure, CPLE_AppDefined,
-                "JP2Emuella codec returned an incompatible component layout");
-            return CE_Failure;
+        if (diagnostics_) {
+            EmuellaJ2kDecodeWorkV0 work{};
+            work.struct_size = sizeof(work);
+            work.abi_version = EMUELLA_J2K_ABI_VERSION;
+            rawError = nullptr;
+            status = emuella_j2k_image_decode_work(image.get(), &work, &rawError);
+            if (!CodecCallSucceeded(status, rawError, "decode work inspection"))
+                return CE_Failure;
+            ++decodeCount_;
+#define WORK_SUM(name) work_.name += work.name
+            WORK_SUM(preparation_count);
+            WORK_SUM(code_blocks_decoded);
+            WORK_SUM(tier1_coefficients);
+            WORK_SUM(dwt_samples);
+            WORK_SUM(synthesis_coefficients_loaded);
+            WORK_SUM(synthesis_horizontal_values);
+            WORK_SUM(synthesis_vertical_values);
+            WORK_SUM(synthesis_lifting_updates);
+            WORK_SUM(synthesis_output_samples);
+            WORK_SUM(windowed_synthesis_component_tiles);
+            WORK_SUM(full_synthesis_component_tiles);
+            WORK_SUM(output_allocation_bytes);
+            WORK_SUM(output_allocation_count);
+#undef WORK_SUM
+#define WORK_PEAK(name) work_.name = std::max(work_.name, work.name)
+            WORK_PEAK(output_capacity_bytes);
+            WORK_PEAK(workspace_retained_heap_bytes);
+            WORK_PEAK(coefficient_capacity);
+            WORK_PEAK(segment_capacity);
+            WORK_PEAK(transform_capacity);
+            WORK_PEAK(full_coefficient_plane_capacity);
+            WORK_PEAK(full_transform_scratch_capacity);
+#undef WORK_PEAK
         }
-
-        rawError = nullptr;
-        status = emuella_j2k_image_copy(image.get(), destination, capacity,
-                                        stride, &rawError);
-        if (!CodecCallSucceeded(status, rawError, "decoded image copy"))
-            return CE_Failure;
+        // Retain one scratch plane only when scatter is needed; contiguous
+        // planar reads copy directly. Its allocation is outside codec metrics.
+        if (pixelSpace != 1) {
+            const auto size = static_cast<size_t>(width) * static_cast<size_t>(height);
+            if (diagnostics_ && scatterPlane_.capacity() < size)
+                ++scatterGrowths_;
+            scatterPlane_.resize(size);
+        }
+        for (int band = 0; band < bandCount; ++band) {
+            auto *target = static_cast<std::uint8_t *>(destination) + band * bandSpace;
+            auto *copyTarget = pixelSpace == 1 ? target : scatterPlane_.data();
+            const size_t stride = pixelSpace == 1 ? static_cast<size_t>(lineSpace) :
+                                                   static_cast<size_t>(width);
+            const size_t capacity = static_cast<size_t>(height - 1) * stride +
+                                    static_cast<size_t>(width);
+            rawError = nullptr;
+            status = emuella_j2k_image_copy_component(image.get(),
+                outputIndices[static_cast<size_t>(band)], copyTarget, capacity,
+                stride, &rawError);
+            if (!CodecCallSucceeded(status, rawError, "decoded component copy"))
+                return CE_Failure;
+            if (pixelSpace != 1)
+                for (int row = 0; row < height; ++row)
+                    for (int column = 0; column < width; ++column)
+                        target[row * lineSpace + column * pixelSpace] =
+                            scatterPlane_[static_cast<size_t>(row) * static_cast<size_t>(width) +
+                                  static_cast<size_t>(column)];
+        }
         return CE_None;
+    } catch (const std::exception &error) {
+        CPLError(CE_Failure, CPLE_AppDefined, "JP2Emuella region read failed: %s",
+                 error.what());
+        return CE_Failure;
+    }
+
+    CPLErr DecodeRegion(int component, int x, int y, int width, int height,
+                        std::uint8_t *destination, size_t stride) {
+        const int band = component + 1;
+        return DecodeBands(x, y, width, height, destination, 1, &band, 1,
+                           static_cast<GSpacing>(stride), 1);
+    }
+
+    CPLErr IRasterIO(GDALRWFlag flag, int x, int y, int width, int height,
+                     void *buffer, int bufferWidth, int bufferHeight,
+                     GDALDataType type, int bandCount, int *bandMap,
+                     GSpacing pixelSpace, GSpacing lineSpace, GSpacing bandSpace,
+                     GDALRasterIOExtraArg *extra) override {
+        const bool generic = extra != nullptr &&
+            (extra->bFloatingPointWindowValidity || extra->pfnProgress != nullptr ||
+             extra->eResampleAlg != GRIORA_NearestNeighbour);
+        std::array<int, 4> unique{};
+        int uniqueCount = 0;
+        bool supported = bandCount > 0 && bandMap != nullptr;
+        for (int index = 0; supported && index < bandCount; ++index) {
+            if (bandMap[index] < 1 || bandMap[index] > GetRasterCount()) {
+                supported = false;
+                break;
+            }
+            if (std::find(unique.begin(), unique.begin() + uniqueCount,
+                          bandMap[index]) == unique.begin() + uniqueCount) {
+                if (uniqueCount == 4)
+                    supported = false;
+                else
+                    unique[static_cast<size_t>(uniqueCount++)] = bandMap[index];
+            }
+        }
+        if (flag == GF_Read && !generic && supported && type == GDT_Byte &&
+            width == bufferWidth && height == bufferHeight &&
+            DirectLayout(width, height, bandCount, pixelSpace, lineSpace, bandSpace))
+            return DecodeBands(x, y, width, height, buffer, bandCount, bandMap,
+                               pixelSpace, lineSpace, bandSpace);
+        return GDALPamDataset::IRasterIO(flag, x, y, width, height, buffer,
+            bufferWidth, bufferHeight, type, bandCount, bandMap, pixelSpace,
+            lineSpace, bandSpace, extra);
     }
 
     static int Identify(GDALOpenInfo *openInfo) {
@@ -280,10 +473,11 @@ class JP2EmuellaRasterBand final : public GDALPamRasterBand {
         const bool needsGenericIO =
             extraArg != nullptr &&
             (extraArg->bFloatingPointWindowValidity ||
-             extraArg->pfnProgress != nullptr);
+             extraArg->pfnProgress != nullptr ||
+             extraArg->eResampleAlg != GRIORA_NearestNeighbour);
         if (!needsGenericIO && width == bufferWidth && height == bufferHeight &&
             bufferType == GDT_Byte && pixelSpace == 1 &&
-            lineSpace >= static_cast<GSpacing>(width)) {
+            JP2EmuellaDataset::DirectLayout(width, height, 1, pixelSpace, lineSpace, 1)) {
             return static_cast<JP2EmuellaDataset *>(poDS)->DecodeRegion(
                 nBand - 1, x, y, width, height,
                 static_cast<std::uint8_t *>(buffer),
@@ -330,7 +524,9 @@ GDALDataset *JP2EmuellaDataset::Open(GDALOpenInfo *openInfo) {
     }
 
     auto dataset = std::make_unique<JP2EmuellaDataset>(
-        std::move(file), static_cast<std::uint64_t>(fileLength));
+        std::move(file), static_cast<std::uint64_t>(fileLength),
+        CPLTestBool(CSLFetchNameValueDef(openInfo->papszOpenOptions,
+                                       "DIAGNOSTICS", "NO")));
     EmuellaJ2kDecoder *rawDecoder = nullptr;
     EmuellaJ2kError *rawError = nullptr;
     auto status =
@@ -434,6 +630,9 @@ extern "C" CPL_DLL void GDALRegister_JP2Emuella() {
     driver->SetMetadataItem(GDAL_DMD_MIMETYPE, "image/j2k");
     driver->SetMetadataItem(GDAL_DMD_HELPTOPIC,
                             "drivers/raster/jp2emuella.html");
+    driver->SetMetadataItem(GDAL_DMD_OPENOPTIONLIST,
+        "<OpenOptionList><Option name='DIAGNOSTICS' type='boolean' default='NO' "
+        "description='Collect dataset decode work in EMUELLA_DIAGNOSTICS'/></OpenOptionList>");
     driver->pfnIdentify = JP2EmuellaDataset::Identify;
     driver->pfnOpen = JP2EmuellaDataset::Open;
     GetGDALDriverManager()->RegisterDriver(driver);
