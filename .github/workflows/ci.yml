@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: emuella/emuella-j2k
-          ref: aa7090c23cce62437cefe5b441e971b1bd4320b5
+          ref: 3afcfabb24282645c3e101ab3495810d28212dfd
           path: emuella-j2k
 
       - uses: dtolnay/rust-toolchain@1.97.1
