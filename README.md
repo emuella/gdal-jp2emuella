@@ -44,7 +44,7 @@ close a dataset only after its readers have finished.
 - CMake 3.20 or later and a C++17 compiler
 - Ninja for the documented commands
 - `emuella-j2k-capi` built from exact revision
-  `553b941911e35863c1eed7f23be8a41e1c4caa84`
+  `aa7090c23cce62437cefe5b441e971b1bd4320b5`
 
 The Emuella ABI is pre-1.0. The CMake revision check is performed when
 `EmuellaJ2K_SOURCE_DIR` is supplied; callers providing only installed headers
