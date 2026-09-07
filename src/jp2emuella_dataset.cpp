@@ -97,6 +97,7 @@ class JP2EmuellaDataset final : public GDALPamDataset {
     std::uint64_t sourceBytes_ = 0;
     std::uint64_t sourceReads_ = 0;
     int sampleBytes_ = 1;
+    int sampleBits_ = 8;
     GDALDataType sampleType_ = GDT_Byte;
     std::uint64_t decodeCount_ = 0;
     std::uint64_t workspaceCreations_ = 0;
@@ -315,7 +316,7 @@ class JP2EmuellaDataset final : public GDALPamDataset {
             if (!CodecCallSucceeded(status, rawError, "decoded component inspection"))
                 return CE_Failure;
             if (info.source_component != request.components[index] ||
-                info.bits_per_sample != sampleBytes_ * 8 || info.is_signed != 0 ||
+                info.bits_per_sample != sampleBits_ || info.is_signed != 0 ||
                 info.byte_order != (sampleBytes_ == 1 ? EMUELLA_J2K_ENDIAN_NONE
                                                       : EMUELLA_J2K_ENDIAN_LITTLE) ||
                 info.horizontal_separation != 1 || info.vertical_separation != 1 ||
@@ -478,7 +479,8 @@ class JP2EmuellaRasterBand final : public GDALPamRasterBand {
         nRasterYSize = dataset->GetRasterYSize();
         eDataType = dataset->sampleType_;
         if (eDataType == GDT_UInt16)
-            SetMetadataItem("NBITS", "16", "IMAGE_STRUCTURE");
+            SetMetadataItem("NBITS", std::to_string(dataset->sampleBits_).c_str(),
+                            "IMAGE_STRUCTURE");
         nBlockXSize = std::min(256, dataset->GetRasterXSize());
         nBlockYSize = std::min(256, dataset->GetRasterYSize());
     }
@@ -597,8 +599,9 @@ GDALDataset *JP2EmuellaDataset::Open(GDALOpenInfo *openInfo) {
         imageInfo.height >
             static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
         imageInfo.component_count == 0 ||
-        (imageInfo.bits_per_sample != 8 && imageInfo.bits_per_sample != 16) ||
-        (imageInfo.bits_per_sample == 16 && imageInfo.component_count != 1) ||
+        (imageInfo.bits_per_sample < 8 || imageInfo.bits_per_sample > 16) ||
+        (imageInfo.bits_per_sample > 8 && imageInfo.component_count != 1 &&
+         !(imageInfo.bits_per_sample == 16 && imageInfo.component_count == 3)) ||
         imageInfo.is_signed != 0 ||
         imageInfo.byte_order != (imageInfo.bits_per_sample == 8
                                      ? EMUELLA_J2K_ENDIAN_NONE
@@ -629,7 +632,8 @@ GDALDataset *JP2EmuellaDataset::Open(GDALOpenInfo *openInfo) {
                                      info.y_origin != components.front().y_origin))) {
             CPLError(CE_Failure, CPLE_NotSupported,
                      "JP2Emuella supports only co-sited, uniform unsigned "
-                     "8-bit components or one 16-bit component with unit separation "
+                     "8-bit components, one 9–16-bit component or three 16-bit components "
+                     "with unit separation "
                      "and full image "
                      "dimensions");
             return nullptr;
@@ -637,7 +641,8 @@ GDALDataset *JP2EmuellaDataset::Open(GDALOpenInfo *openInfo) {
         components.push_back(info);
     }
 
-    dataset->sampleBytes_ = imageInfo.bits_per_sample / 8;
+    dataset->sampleBits_ = imageInfo.bits_per_sample;
+    dataset->sampleBytes_ = (imageInfo.bits_per_sample + 7) / 8;
     dataset->sampleType_ = imageInfo.bits_per_sample == 8 ? GDT_Byte : GDT_UInt16;
     dataset->nRasterXSize = static_cast<int>(imageInfo.width);
     dataset->nRasterYSize = static_cast<int>(imageInfo.height);

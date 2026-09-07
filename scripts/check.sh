@@ -19,6 +19,7 @@ gdal_prefix=${GDAL_PREFIX:-"$(${gdal_config} --prefix)"}
     -DEmuellaJ2K_LIBRARY="${codec_library}" \
     -DJP2EMUELLA_TEST_NITF="${JP2EMUELLA_TEST_NITF:-OFF}" \
     -DJP2EMUELLA_GDAL_NITF_FIXTURE="${JP2EMUELLA_GDAL_NITF_FIXTURE:-}" \
+    -DJP2EMUELLA_SATELLITE_NITF_FIXTURE="${JP2EMUELLA_SATELLITE_NITF_FIXTURE:-}" \
     -DBUILD_TESTING=ON
 "${cmake_command}" --build "${build_dir}" --parallel
 "${ctest_command}" --test-dir "${build_dir}" --output-on-failure

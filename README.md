@@ -7,11 +7,13 @@ named `gdal_JP2Emuella.so` and registers the `JP2Emuella` driver through both
 
 This initial driver is deliberately narrow. It opens read-only raw codestreams
 whose first markers are exactly SOC and SIZ (`FF4FFF51`). Every component must
-be unsigned 8-bit, or the image must contain exactly one unsigned 16-bit
-component. Components must have unit horizontal and vertical separation, have
-the full image dimensions and share an origin. JP2 wrappers and other inputs are not
-identified. Accepted components are exposed as GDAL Byte or native-endian UInt16 bands.
-Unsigned 9–15-bit and 16-bit RGB inputs remain unqualified and are rejected.
+be unsigned 8-bit, or the image must contain exactly one unsigned 9–16-bit
+component or three unsigned 16-bit components. Components must have unit
+horizontal and vertical separation, have the full image dimensions and share
+an origin. JP2 wrappers and other inputs are not identified. Accepted components
+are exposed as GDAL Byte or native-endian UInt16 bands.
+The band `NBITS` metadata retains actual multibyte precision. Intermediate
+9–15-bit RGB, signed components and other component geometries remain excluded.
 
 The plugin uses only public GDAL APIs and `emuella_j2k.h`. Each dataset owns its
 VSI handle for its entire decoder lifetime. Codec positioned reads are bounded,
@@ -25,8 +27,7 @@ before the source context and file.
 
 Dataset RasterIO combines up to four distinct bands into one regional codec
 request for matching integer source/buffer windows and output matching the
-native Byte or UInt16 type. It preserves
-requested order, including duplicate bands, with deduplication and output
+native Byte or UInt16 type. It preserves requested order, including duplicate bands, with deduplication and output
 scatter. Supported positive layouts include planar and pixel-interleaved
 buffers with pixel, row and band padding. Offset arithmetic is bounded before
 pointer arithmetic. A reusable dataset scratch plane supports scatter; a
@@ -47,7 +48,7 @@ close a dataset only after its readers have finished.
 - CMake 3.20 or later and a C++17 compiler
 - Ninja for the documented commands
 - `emuella-j2k-capi` built from exact revision
-  `aa7090c23cce62437cefe5b441e971b1bd4320b5`
+  `b4c4cffa35cbdac0383c2c0fc46ebe8e729f3bfa`
 
 The Emuella ABI is pre-1.0. The CMake revision check is performed when
 `EmuellaJ2K_SOURCE_DIR` is supplied; callers providing only installed headers
@@ -85,12 +86,14 @@ The RGB suite additionally checks reversible-MCT pixels, full images, band order
 duplicates, padding guards, negative-stride and type-conversion fallback,
 fractional resampling, dataset progress/cancellation, shared MCT work and
 workspace reuse. A one-iteration benchmark smoke test exercises all nine cells. The precision
-suite checks authored tiled UInt16 grayscale pixels, unaligned and padded
+suite checks authored tiled unsigned 9–16-bit grayscale and 16-bit RGB pixels,
+unaligned and padded
 buffers, duplicate-band scatter, type conversion, negative strides, block reads,
 workspace reuse and logical source-read counters. The fork-local NITF suite
-also checks exact UInt16 full, tile-crossing and edge pixels.
+also checks exact 11/16-bit grayscale and 16-bit RGB full, tile-crossing and edge
+pixels.
 See the [precision calibration record](docs/precision-calibration.md) for the
-explicit RGB and 9–15-bit gaps.
+real-source observations and remaining profile gaps.
 
 `scripts/check.sh` requires `EMUELLA_J2K_SOURCE_DIR`. It derives the codec
 library from that checkout and the GDAL prefix from `gdal-config` by default:
@@ -230,6 +233,25 @@ EMUELLA_J2K_SOURCE_DIR=/path/to/emuella-j2k \
 The external fixture is optional and is never copied into this project or its
 build tree. Without the path, all default and fork-local checks continue to use
 only project-authored inputs.
+
+An opt-in regional journey uses an existing authorised CORE3D Jacksonville WV3
+PAN NITF. Configuration checks SHA-256
+`61c1ba16ff0c7b1788e912cc143ecf966566cd7c092eb14a111e75a185547e4a`
+in place. Set `JP2EMUELLA_SATELLITE_NITF_FIXTURE=/absolute/path/to/source.NTF`
+alongside `JP2EMUELLA_TEST_NITF=ON` when running `scripts/check.sh`. This adds
+`jp2emuella_satellite_nitf`; CTest verbose output includes aggregate JSON
+observations. It opens the outer NITF with alternative JPEG 2000 drivers
+isolated, preserves 11-bit native precision, and compares the 32×32 window at
+(20000,20000) with a repeat and its containing complete 1024×1024 tile. All
+sample buffers stay in memory and PAM sidecars are disabled. The test does not acquire, copy, save or delete
+the source or its pixels. Supply only an existing source whose use you have
+authorised; the option does not grant rights or accept external terms.
+
+The real-source diagnostic snapshots belong to a separately opened embedded
+`JP2Emuella` dataset. They exclude outer NITF reads and are logical codec/VSI
+requests, not physical storage traffic. The comparisons establish consistency
+within one representation, not independent decoder accuracy or source
+losslessness. See [precision calibration](docs/precision-calibration.md).
 
 The fork change and this integration test are agent-assisted, fork-local work.
 They must not be submitted to OSGeo/GDAL through an agent workflow; GDAL's

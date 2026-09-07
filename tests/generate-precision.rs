@@ -7,8 +7,11 @@ use emuella_j2k::{
 fn main() {
     let output = std::path::PathBuf::from(std::env::args_os().nth(1).expect("output directory"));
     std::fs::create_dir_all(&output).unwrap();
-    for bits in [16] {
+    for bits in 9..=16 {
         for bands in [1_u16, 3] {
+            if bands == 3 && bits != 16 {
+                continue;
+            }
             let format =
                 SampleFormat::with_byte_order(bits, false, Some(SampleEndian::Little)).unwrap();
             let info = ImageInfo::new(
