@@ -260,12 +260,19 @@ human-authored, understood and disclosed under that policy.
 
 ## Scope and provenance
 
-The test images are generated deterministically by project-authored
-`emuella-j2k-test-support` recipes. Their provenance is recorded beside the
-fixtures. The RGB codestream comes from `native_planes::reversible_mct_region_fixture`
+The original grayscale and RGB test images use project-authored
+`emuella-j2k-test-support` recipes. Their Apache-2.0 provenance is recorded in
+[the grayscale record](tests/fixtures/PROVENANCE.toml) and
+[the RGB record](tests/fixtures/rgb-mct-256x192.PROVENANCE.toml).
+The RGB codestream comes from `native_planes::reversible_mct_region_fixture`
 (`tnsot_one`): 256x192, reversible MCT, five decomposition levels and 19 quality
-layers. Tests calculate its authored RGB formulae independently of decoding. No
-protected corpus data or external implementation source is included.
+layers. Tests calculate its authored RGB formulae independently of decoding.
 
-This project is licensed under the MIT Licence. The generated test codestreams
-are Apache-2.0 as recorded in their provenance files.
+The nine precision fixtures use the local
+[arithmetic generator](tests/generate-precision.rs), with MIT licence, formulae,
+codec revision and digests recorded in
+[their provenance record](tests/fixtures/precision-PROVENANCE.toml).
+No protected corpus data or external implementation source is included.
+
+This project is licensed under the MIT Licence. Each generated test codestream
+retains the licence recorded in its corresponding provenance file.
