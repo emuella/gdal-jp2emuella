@@ -129,6 +129,48 @@ void Generic() {
                 7, 11, 13, 9, expected.data() + band * 7 * 5, 7, 5,
                 GDT_Byte, 1, 7, &copy) == CE_None, "fractional reference read failed");
         rgb::Check(actual == expected, "fractional/resampled dataset pixels differ");
+
+        // Equal dimensions leave the fractional-window guard as the nearest-
+        // neighbour request's only reason to bypass the combined fast path.
+        constexpr size_t guard = 17;
+        constexpr GSpacing pixel = 3;
+        constexpr GSpacing line = 13 * pixel + 11;
+        std::vector<std::uint8_t> equal(guard * 2 + line * 9, 0xa5);
+        std::vector<std::uint8_t> generic(equal.size(), 0xa5);
+        std::vector<bool> touched(equal.size(), false);
+        auto fractional = extra;
+        auto forced = extra;
+        int progressCalls = 0;
+        forced.pfnProgress = [](double, const char *, void *data) {
+            ++*static_cast<int *>(data);
+            return TRUE;
+        };
+        forced.pProgressData = &progressCalls;
+        rgb::Check(dataset->RasterIO(GF_Read, 7, 11, 13, 9,
+            equal.data() + guard, 13, 9, GDT_Byte, 3, map, pixel, line, 1,
+            &fractional) == CE_None, "equal-size fractional dataset read failed");
+        rgb::Check(dataset->RasterIO(GF_Read, 7, 11, 13, 9,
+            generic.data() + guard, 13, 9, GDT_Byte, 3, map, pixel, line, 1,
+            &forced) == CE_None && progressCalls > 0,
+            "forced generic equal-size fractional read failed");
+        bool differsFromInteger = false;
+        for (int band = 0; band < 3; ++band)
+            for (int y = 0; y < 9; ++y)
+                for (int x = 0; x < 13; ++x) {
+                    const auto index = guard + static_cast<size_t>(
+                        y * line + x * pixel + band);
+                    touched[index] = true;
+                    differsFromInteger |= generic[index] !=
+                        rgb::Expected(map[band], 7 + x, 11 + y);
+                }
+        rgb::Check(differsFromInteger,
+                   "equal-size fractional oracle matches the integer window");
+        for (size_t index = 0; index < equal.size(); ++index)
+            rgb::Check(touched[index] ||
+                (equal[index] == 0xa5 && generic[index] == 0xa5),
+                "equal-size fractional read overwrote a guard or padding");
+        rgb::Check(equal == generic,
+                   "equal-size fractional dataset pixels differ from generic");
     }
     for (const bool cancel : {false, true}) {
         struct State { int calls; bool cancel; } state{0, cancel};
