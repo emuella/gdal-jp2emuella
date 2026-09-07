@@ -22,7 +22,9 @@ evidence; the codec owns sample, transform and codestream semantics.
 | Plugin `2f8f4e59009e1316be8c5a010a86f20a2716d676` | Authored grayscale16 GDAL/NITF qualification passed. The real 11-bit input passed C ABI inspection but failed the plugin's 8/16-only precision predicate. |
 | Codec `b4c4cffa35cbdac0383c2c0fc46ebe8e729f3bfa`, current plugin candidate | Codec owner supplies genuine 9–15-bit grayscale encoding and RGB16 regional MCT. All authored grayscale9–16 and RGB16 plugin tests pass; the supplied real11 NITF journey passes. Retain the wider validated candidate. |
 
-The consumed codec was rebuilt in release mode from the exact clean source.
+The final consumed codec is merged revision
+`3afcfabb24282645c3e101ab3495810d28212dfd`; calibration checkpoints above remain
+historical observations. The consumed codec is rebuilt in release mode from exact clean source.
 The maintained GDAL fork is
 `1af54d99959f3b62ba10451a357a969075374663` (development version 3.14), with its
 other JPEG 2000 drivers disabled. The tests additionally isolate those drivers,
@@ -113,5 +115,5 @@ execution remain unqualified. Neither this single real image nor authored
 samples prove universal satellite interoperability, independent decoder
 agreement, lossy preparation, physical storage behaviour or browser delivery.
 The C ABI still prepares each region, reflected by identical first/repeat
-request costs. Persistent indexed reuse across different requests remains
-codec work. The broader viewer and detection proof is not complete.
+request costs. Persistent Part 1 index reuse through the source-backed C ABI remains
+codec work; the separate Rust HT viewing profile now has reusable sparse indexes. The broader viewer and detection proof is not complete.
