@@ -75,9 +75,9 @@ void Check(bool condition, const std::string &message) {
         throw std::runtime_error(message);
 }
 
-std::vector<std::uint8_t> ReadFixture() {
+std::vector<std::uint8_t> ReadFixture(const char *name = "gray-gradient-17x19.j2k") {
     const std::string path =
-        std::string(JP2EMUELLA_FIXTURE_DIR) + "/gray-gradient-17x19.j2k";
+        std::string(JP2EMUELLA_FIXTURE_DIR) + "/" + name;
     std::ifstream stream(path, std::ios::binary);
     Check(stream.good(), "could not open project-authored fixture");
     return {std::istreambuf_iterator<char>(stream),
@@ -128,7 +128,8 @@ void PutVsiMem(const char *path, const std::vector<std::uint8_t> &bytes) {
 }
 
 std::vector<std::uint8_t>
-BuildNITFC8Fixture(const std::vector<std::uint8_t> &codestream) {
+BuildNITFC8Fixture(const std::vector<std::uint8_t> &codestream,
+                   int width = 17, int height = 19, GDALDataType type = GDT_Byte) {
     constexpr const char *skeletonPath = "/vsimem/jp2emuella-nitf-nc.ntf";
     auto *driver = GetGDALDriverManager()->GetDriverByName("NITF");
     Check(driver != nullptr, "NITF driver is unavailable");
@@ -136,7 +137,7 @@ BuildNITFC8Fixture(const std::vector<std::uint8_t> &codestream) {
     CPLStringList options;
     options.SetNameValue("IC", "NC");
     DatasetPtr skeleton(
-        driver->Create(skeletonPath, 17, 19, 1, GDT_Byte, options.List()));
+        driver->Create(skeletonPath, width, height, 1, type, options.List()));
     Check(skeleton != nullptr, "could not create NITF skeleton");
     skeleton.reset();
 
@@ -289,6 +290,41 @@ void TestNITFDecode(const std::vector<std::uint8_t> &fixture) {
     VSIUnlink(path);
 }
 
+void TestPrecisionNITF() {
+    const auto fixture =
+        BuildNITFC8Fixture(ReadFixture("precision-16-1.j2k"), 67, 53, GDT_UInt16);
+    constexpr const char *path = "/vsimem/jp2emuella-precision-c8.ntf";
+    PutVsiMem(path, fixture);
+    auto dataset = OpenNITF(path);
+    Check(dataset != nullptr, "UInt16 NITF did not open");
+    CheckNestedJP2Emuella(dataset.get());
+    auto *band = dataset->GetRasterBand(1);
+    Check(band->GetRasterDataType() == GDT_UInt16,
+          "NITF changed UInt16 sample representation");
+    for (const auto &region :
+         {std::array<int, 4>{29, 27, 9, 11}, std::array<int, 4>{0, 0, 67, 53},
+          std::array<int, 4>{66, 52, 1, 1}}) {
+        const int x = region[0], y = region[1], w = region[2], h = region[3];
+        std::vector<std::uint16_t> samples(static_cast<size_t>(w * h));
+        Check(band->RasterIO(GF_Read, x, y, w, h, samples.data(), w, h, GDT_UInt16, 2,
+                             w * 2, nullptr) == CE_None,
+              "UInt16 NITF read failed");
+        for (int row = 0; row < h; ++row)
+            for (int col = 0; col < w; ++col) {
+                const int xx = x + col, yy = y + row;
+                const auto expected = static_cast<std::uint16_t>(
+                    xx == 0 && yy == 0 ? 0
+                    : xx == 66 && yy == 52
+                        ? 65535
+                        : (xx * 997 + yy * 617 + xx * yy * 13) & 65535);
+                Check(samples[static_cast<size_t>(row * w + col)] == expected,
+                      "NITF lost UInt16 sample precision");
+            }
+    }
+    dataset.reset();
+    VSIUnlink(path);
+}
+
 void TestExternalGDALNITF(const char *path) {
     auto dataset = OpenNITF(path);
     Check(dataset != nullptr, "external GDAL NITF fixture did not open");
@@ -412,6 +448,7 @@ int main() {
             // delegation rather than merely proving a separate reopen works.
             AlternativeJ2KDriverIsolation isolateAlternatives;
             TestNITFDecode(fixture);
+            TestPrecisionNITF();
             TestNarrowAllowList(fixture);
             if (const char *externalFixture =
                     std::getenv("JP2EMUELLA_GDAL_NITF_FIXTURE");

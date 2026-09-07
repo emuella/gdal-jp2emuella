@@ -1,0 +1,26 @@
+schema_version = 1
+origin = "Project-authored deterministic arithmetic images, no external image inputs"
+licence = "MIT"
+recipe = "../generate-precision.rs"
+codec_revision = "aa7090c23cce62437cefe5b441e971b1bd4320b5"
+width = 67
+height = 53
+bits_per_sample = 16
+signed = false
+tile_width = 32
+tile_height = 32
+decomposition_levels = 2
+encoding = "Emuella Part 1 lossless, reversible 5/3; RGB uses reversible MCT"
+oracle = "0 at (0,0), 65535 at (66,52), otherwise (x*997+y*617+x*y*13+component*1237)&65535"
+
+[[fixtures]]
+file = "precision-16-1.j2k"
+components = 1
+sha256 = "ed9937e1e5b1980d57301c19ad3b555e17300eb52db681b1bc5bddc29e012111"
+qualification = "Exact full and regional UInt16 grayscale through GDAL and fork-local NITF"
+
+[[fixtures]]
+file = "precision-16-3.j2k"
+components = 3
+sha256 = "e42ebad6bd684123d8a1023e611dc037edd0b3c4e0e860a9321faf3615c25708"
+qualification = "Negative admission fixture; C ABI regional reversible MCT rejects UInt16 RGB"

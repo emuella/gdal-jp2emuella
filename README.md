@@ -7,9 +7,11 @@ named `gdal_JP2Emuella.so` and registers the `JP2Emuella` driver through both
 
 This initial driver is deliberately narrow. It opens read-only raw codestreams
 whose first markers are exactly SOC and SIZ (`FF4FFF51`). Every component must
-be unsigned 8-bit, have unit horizontal and vertical separation, have the full
-image dimensions and share an origin. JP2 wrappers and other inputs are not
-identified. Accepted components are exposed as GDAL Byte bands.
+be unsigned 8-bit, or the image must contain exactly one unsigned 16-bit
+component. Components must have unit horizontal and vertical separation, have
+the full image dimensions and share an origin. JP2 wrappers and other inputs are not
+identified. Accepted components are exposed as GDAL Byte or native-endian UInt16 bands.
+Unsigned 9–15-bit and 16-bit RGB inputs remain unqualified and are rejected.
 
 The plugin uses only public GDAL APIs and `emuella_j2k.h`. Each dataset owns its
 VSI handle for its entire decoder lifetime. Codec positioned reads are bounded,
@@ -22,7 +24,8 @@ callback acquires only the VSI mutex. The workspace and decoder are destroyed
 before the source context and file.
 
 Dataset RasterIO combines up to four distinct bands into one regional codec
-request for matching integer source/buffer windows and Byte output. It preserves
+request for matching integer source/buffer windows and output matching the
+native Byte or UInt16 type. It preserves
 requested order, including duplicate bands, with deduplication and output
 scatter. Supported positive layouts include planar and pixel-interleaved
 buffers with pixel, row and band padding. Offset arithmetic is bounded before
@@ -81,7 +84,13 @@ malformed and unsupported inputs, concurrent reads and open/close lifecycle.
 The RGB suite additionally checks reversible-MCT pixels, full images, band order,
 duplicates, padding guards, negative-stride and type-conversion fallback,
 fractional resampling, dataset progress/cancellation, shared MCT work and
-workspace reuse. A one-iteration benchmark smoke test exercises all nine cells.
+workspace reuse. A one-iteration benchmark smoke test exercises all nine cells. The precision
+suite checks authored tiled UInt16 grayscale pixels, unaligned and padded
+buffers, duplicate-band scatter, type conversion, negative strides, block reads,
+workspace reuse and logical source-read counters. The fork-local NITF suite
+also checks exact UInt16 full, tile-crossing and edge pixels.
+See the [precision calibration record](docs/precision-calibration.md) for the
+explicit RGB and 9–15-bit gaps.
 
 `scripts/check.sh` requires `EMUELLA_J2K_SOURCE_DIR`. It derives the codec
 library from that checkout and the GDAL prefix from `gdal-config` by default:
@@ -139,6 +148,7 @@ collected by default.
 
 | Field | Meaning and scope |
 |---|---|
+| `SOURCE_READ_REQUESTS` | Valid, non-empty codec source callback requests, with the same inclusion and exclusion rules as `SOURCE_BYTES_REQUESTED`. This is a logical VSI request count, not a physical storage-operation count. |
 | `SOURCE_BYTES_REQUESTED` | Bytes requested by valid, non-empty codec source callbacks, including inspection during open and repeated reads; includes requests that subsequently fail VSI I/O. It excludes GDAL's initial identification reads and is not disk traffic or cache misses. |
 | `DECODE_COUNT`, `preparation_count` | Successful codec region calls and their preparations. Repeated windows prepare again; workspace reuse is not region-plan or decoded-image caching. |
 | `WORKSPACE_CREATIONS` | Successful dataset workspace creations (normally zero before the first decode, then one). |

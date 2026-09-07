@@ -95,6 +95,9 @@ class JP2EmuellaDataset final : public GDALPamDataset {
     std::uint64_t scatterGrowths_ = 0;
     bool diagnostics_ = false;
     std::uint64_t sourceBytes_ = 0;
+    std::uint64_t sourceReads_ = 0;
+    int sampleBytes_ = 1;
+    GDALDataType sampleType_ = GDT_Byte;
     std::uint64_t decodeCount_ = 0;
     std::uint64_t workspaceCreations_ = 0;
     EmuellaJ2kDecodeWorkV0 work_{};
@@ -119,8 +122,10 @@ class JP2EmuellaDataset final : public GDALPamDataset {
                 return EMUELLA_J2K_STATUS_OK;
 
             std::lock_guard<std::mutex> lock(dataset->fileMutex_);
-            if (dataset->diagnostics_)
+            if (dataset->diagnostics_) {
                 dataset->sourceBytes_ += length;
+                ++dataset->sourceReads_;
+            }
             if (VSIFSeekL(dataset->file_.get(),
                           static_cast<vsi_l_offset>(offset), SEEK_SET) != 0)
                 return EMUELLA_J2K_STATUS_SOURCE_IO;
@@ -164,6 +169,7 @@ class JP2EmuellaDataset final : public GDALPamDataset {
         };
         set("SCHEMA_VERSION", 1);
         set("SOURCE_BYTES_REQUESTED", sourceBytes_);
+        set("SOURCE_READ_REQUESTS", sourceReads_);
         set("DECODE_COUNT", decodeCount_);
         set("WORKSPACE_CREATIONS", workspaceCreations_);
         set("SCATTER_GROWTH_REQUESTS", scatterGrowths_);
@@ -204,43 +210,50 @@ class JP2EmuellaDataset final : public GDALPamDataset {
 
     // Only monotone, non-overlapping planar or pixel-interleaved layouts are
     // admitted. Bound the complete offset by ptrdiff_t before pointer arithmetic.
-    static bool DirectLayout(int width, int height, int bands,
-                             GSpacing pixel, GSpacing line, GSpacing band) {
-        if (width <= 0 || height <= 0 || bands <= 0 || pixel <= 0 ||
+    static bool DirectLayout(int width, int height, int bands, GSpacing pixel,
+                             GSpacing line, GSpacing band, int sampleBytes) {
+        if (width <= 0 || height <= 0 || bands <= 0 || pixel < sampleBytes ||
             line <= 0 || band <= 0)
             return false;
-        const auto limit = static_cast<std::uint64_t>(
-            std::numeric_limits<std::ptrdiff_t>::max());
-        std::uint64_t extent = 1;
+        const auto limit =
+            static_cast<std::uint64_t>(std::numeric_limits<std::ptrdiff_t>::max());
+        std::uint64_t extent = static_cast<unsigned>(sampleBytes);
         auto add = [&](int count, GSpacing stride) {
             const auto step = static_cast<std::uint64_t>(stride);
-            if (step > limit || (count > 1 &&
-                step > (limit - extent) / static_cast<unsigned>(count - 1)))
+            if (step > limit ||
+                (count > 1 &&
+                 step > (limit - extent) / static_cast<unsigned>(count - 1)))
                 return false;
             extent += static_cast<unsigned>(count - 1) * step;
             return true;
         };
         if (!add(width, pixel) || !add(height, line) || !add(bands, band))
             return false;
-        const auto rowExtent = static_cast<std::uint64_t>(width - 1) *
-                               static_cast<std::uint64_t>(pixel) + 1;
-        const auto planeExtent = static_cast<std::uint64_t>(height - 1) *
-                                 static_cast<std::uint64_t>(line) + rowExtent;
-        const auto sampleExtent = static_cast<std::uint64_t>(bands - 1) *
-                                  static_cast<std::uint64_t>(band) + 1;
+        const auto rowExtent =
+            static_cast<std::uint64_t>(width - 1) * static_cast<std::uint64_t>(pixel) +
+            static_cast<unsigned>(sampleBytes);
+        const auto planeExtent =
+            static_cast<std::uint64_t>(height - 1) * static_cast<std::uint64_t>(line) +
+            rowExtent;
+        const auto sampleExtent =
+            static_cast<std::uint64_t>(bands - 1) * static_cast<std::uint64_t>(band) +
+            static_cast<unsigned>(sampleBytes);
         return (static_cast<std::uint64_t>(line) >= rowExtent &&
                 (bands == 1 || static_cast<std::uint64_t>(band) >= planeExtent)) ||
-               (static_cast<std::uint64_t>(pixel) >= sampleExtent &&
-                static_cast<std::uint64_t>(line) >= rowExtent + sampleExtent - 1);
+               (static_cast<std::uint64_t>(band) >=
+                    static_cast<unsigned>(sampleBytes) &&
+                static_cast<std::uint64_t>(pixel) >= sampleExtent &&
+                static_cast<std::uint64_t>(line) >=
+                    rowExtent + sampleExtent - static_cast<unsigned>(sampleBytes));
     }
 
     CPLErr DecodeBands(int x, int y, int width, int height, void *destination,
                        int bandCount, const int *bandMap, GSpacing pixelSpace,
                        GSpacing lineSpace, GSpacing bandSpace) try {
-        if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
-            x > nRasterXSize - width || y > nRasterYSize - height ||
-            destination == nullptr || bandMap == nullptr ||
-            !DirectLayout(width, height, bandCount, pixelSpace, lineSpace, bandSpace)) {
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 || x > nRasterXSize - width ||
+            y > nRasterYSize - height || destination == nullptr || bandMap == nullptr ||
+            !DirectLayout(width, height, bandCount, pixelSpace, lineSpace, bandSpace,
+                          sampleBytes_)) {
             CPLError(CE_Failure, CPLE_IllegalArg,
                      "JP2Emuella received an invalid decode region or layout");
             return CE_Failure;
@@ -297,17 +310,20 @@ class JP2EmuellaDataset final : public GDALPamDataset {
             info.struct_size = sizeof(info);
             info.abi_version = EMUELLA_J2K_ABI_VERSION;
             rawError = nullptr;
-            status = emuella_j2k_image_component_info_at(image.get(), index,
-                                                        &info, &rawError);
+            status = emuella_j2k_image_component_info_at(image.get(), index, &info,
+                                                         &rawError);
             if (!CodecCallSucceeded(status, rawError, "decoded component inspection"))
                 return CE_Failure;
             if (info.source_component != request.components[index] ||
-                info.bits_per_sample != 8 || info.is_signed != 0 ||
-                info.byte_order != EMUELLA_J2K_ENDIAN_NONE ||
+                info.bits_per_sample != sampleBytes_ * 8 || info.is_signed != 0 ||
+                info.byte_order != (sampleBytes_ == 1 ? EMUELLA_J2K_ENDIAN_NONE
+                                                      : EMUELLA_J2K_ENDIAN_LITTLE) ||
                 info.horizontal_separation != 1 || info.vertical_separation != 1 ||
                 info.width != request.width || info.height != request.height ||
-                info.x_origin != static_cast<std::uint64_t>(imageOriginX_) + request.x ||
-                info.y_origin != static_cast<std::uint64_t>(imageOriginY_) + request.y) {
+                info.x_origin !=
+                    static_cast<std::uint64_t>(imageOriginX_) + request.x ||
+                info.y_origin !=
+                    static_cast<std::uint64_t>(imageOriginY_) + request.y) {
                 CPLError(CE_Failure, CPLE_AppDefined,
                          "JP2Emuella codec returned an incompatible component layout");
                 return CE_Failure;
@@ -349,31 +365,49 @@ class JP2EmuellaDataset final : public GDALPamDataset {
         }
         // Retain one scratch plane only when scatter is needed; contiguous
         // planar reads copy directly. Its allocation is outside codec metrics.
-        if (pixelSpace != 1) {
-            const auto size = static_cast<size_t>(width) * static_cast<size_t>(height);
+        if (pixelSpace != sampleBytes_) {
+            const auto size = static_cast<size_t>(width) * static_cast<size_t>(height) *
+                              static_cast<size_t>(sampleBytes_);
             if (diagnostics_ && scatterPlane_.capacity() < size)
                 ++scatterGrowths_;
             scatterPlane_.resize(size);
         }
         for (int band = 0; band < bandCount; ++band) {
             auto *target = static_cast<std::uint8_t *>(destination) + band * bandSpace;
-            auto *copyTarget = pixelSpace == 1 ? target : scatterPlane_.data();
-            const size_t stride = pixelSpace == 1 ? static_cast<size_t>(lineSpace) :
-                                                   static_cast<size_t>(width);
-            const size_t capacity = static_cast<size_t>(height - 1) * stride +
-                                    static_cast<size_t>(width);
+            auto *copyTarget =
+                pixelSpace == sampleBytes_ ? target : scatterPlane_.data();
+            const size_t stride =
+                pixelSpace == sampleBytes_
+                    ? static_cast<size_t>(lineSpace)
+                    : static_cast<size_t>(width) * static_cast<size_t>(sampleBytes_);
+            const size_t capacity =
+                static_cast<size_t>(height - 1) * stride +
+                static_cast<size_t>(width) * static_cast<size_t>(sampleBytes_);
             rawError = nullptr;
-            status = emuella_j2k_image_copy_component(image.get(),
-                outputIndices[static_cast<size_t>(band)], copyTarget, capacity,
-                stride, &rawError);
+            status = emuella_j2k_image_copy_component(
+                image.get(), outputIndices[static_cast<size_t>(band)], copyTarget,
+                capacity, stride, &rawError);
             if (!CodecCallSucceeded(status, rawError, "decoded component copy"))
                 return CE_Failure;
-            if (pixelSpace != 1)
+            if (pixelSpace != sampleBytes_)
                 for (int row = 0; row < height; ++row)
                     for (int column = 0; column < width; ++column)
-                        target[row * lineSpace + column * pixelSpace] =
-                            scatterPlane_[static_cast<size_t>(row) * static_cast<size_t>(width) +
-                                  static_cast<size_t>(column)];
+                        std::memcpy(
+                            target + row * lineSpace + column * pixelSpace,
+                            scatterPlane_.data() +
+                                (static_cast<size_t>(row) * static_cast<size_t>(width) +
+                                 static_cast<size_t>(column)) *
+                                    static_cast<size_t>(sampleBytes_),
+                            static_cast<size_t>(sampleBytes_));
+#ifdef CPL_MSB
+            // The C ABI returns little-endian bytes; GDAL buffers use host order.
+            if (sampleBytes_ == 2)
+                for (int row = 0; row < height; ++row)
+                    for (int column = 0; column < width; ++column) {
+                        auto *sample = target + row * lineSpace + column * pixelSpace;
+                        std::swap(sample[0], sample[1]);
+                    }
+#endif
         }
         return CE_None;
     } catch (const std::exception &error) {
@@ -385,8 +419,8 @@ class JP2EmuellaDataset final : public GDALPamDataset {
     CPLErr DecodeRegion(int component, int x, int y, int width, int height,
                         std::uint8_t *destination, size_t stride) {
         const int band = component + 1;
-        return DecodeBands(x, y, width, height, destination, 1, &band, 1,
-                           static_cast<GSpacing>(stride), 1);
+        return DecodeBands(x, y, width, height, destination, 1, &band, sampleBytes_,
+                           static_cast<GSpacing>(stride), sampleBytes_);
     }
 
     CPLErr IRasterIO(GDALRWFlag flag, int x, int y, int width, int height,
@@ -413,9 +447,10 @@ class JP2EmuellaDataset final : public GDALPamDataset {
                     unique[static_cast<size_t>(uniqueCount++)] = bandMap[index];
             }
         }
-        if (flag == GF_Read && !generic && supported && type == GDT_Byte &&
+        if (flag == GF_Read && !generic && supported && type == sampleType_ &&
             width == bufferWidth && height == bufferHeight &&
-            DirectLayout(width, height, bandCount, pixelSpace, lineSpace, bandSpace))
+            DirectLayout(width, height, bandCount, pixelSpace, lineSpace, bandSpace,
+                         sampleBytes_))
             return DecodeBands(x, y, width, height, buffer, bandCount, bandMap,
                                pixelSpace, lineSpace, bandSpace);
         return GDALPamDataset::IRasterIO(flag, x, y, width, height, buffer,
@@ -441,7 +476,9 @@ class JP2EmuellaRasterBand final : public GDALPamRasterBand {
         nBand = band;
         nRasterXSize = dataset->GetRasterXSize();
         nRasterYSize = dataset->GetRasterYSize();
-        eDataType = GDT_Byte;
+        eDataType = dataset->sampleType_;
+        if (eDataType == GDT_UInt16)
+            SetMetadataItem("NBITS", "16", "IMAGE_STRUCTURE");
         nBlockXSize = std::min(256, dataset->GetRasterXSize());
         nBlockYSize = std::min(256, dataset->GetRasterYSize());
     }
@@ -453,11 +490,13 @@ class JP2EmuellaRasterBand final : public GDALPamRasterBand {
         const int height = std::min(nBlockYSize, nRasterYSize - y);
         std::memset(buffer, 0,
                     static_cast<size_t>(nBlockXSize) *
-                        static_cast<size_t>(nBlockYSize));
+                        static_cast<size_t>(nBlockYSize) *
+                        static_cast<size_t>(GDALGetDataTypeSizeBytes(eDataType)));
         auto *dataset = static_cast<JP2EmuellaDataset *>(poDS);
         return dataset->DecodeRegion(nBand - 1, x, y, width, height,
                                      static_cast<std::uint8_t *>(buffer),
-                                     static_cast<size_t>(nBlockXSize));
+                                     static_cast<size_t>(nBlockXSize) *
+                                     static_cast<size_t>(dataset->sampleBytes_));
     }
 
     CPLErr IRasterIO(GDALRWFlag readWriteFlag, int x, int y, int width,
@@ -471,16 +510,17 @@ class JP2EmuellaRasterBand final : public GDALPamRasterBand {
         }
         // GDAL owns fractional-window resampling and progress/cancellation.
         const bool needsGenericIO =
-            extraArg != nullptr &&
-            (extraArg->bFloatingPointWindowValidity ||
-             extraArg->pfnProgress != nullptr ||
-             extraArg->eResampleAlg != GRIORA_NearestNeighbour);
+            extraArg != nullptr && (extraArg->bFloatingPointWindowValidity ||
+                                    extraArg->pfnProgress != nullptr ||
+                                    extraArg->eResampleAlg != GRIORA_NearestNeighbour);
         if (!needsGenericIO && width == bufferWidth && height == bufferHeight &&
-            bufferType == GDT_Byte && pixelSpace == 1 &&
-            JP2EmuellaDataset::DirectLayout(width, height, 1, pixelSpace, lineSpace, 1)) {
+            bufferType == eDataType &&
+            pixelSpace == GDALGetDataTypeSizeBytes(eDataType) &&
+            JP2EmuellaDataset::DirectLayout(width, height, 1, pixelSpace, lineSpace,
+                                            pixelSpace,
+                                            GDALGetDataTypeSizeBytes(eDataType))) {
             return static_cast<JP2EmuellaDataset *>(poDS)->DecodeRegion(
-                nBand - 1, x, y, width, height,
-                static_cast<std::uint8_t *>(buffer),
+                nBand - 1, x, y, width, height, static_cast<std::uint8_t *>(buffer),
                 static_cast<size_t>(lineSpace));
         }
         return GDALPamRasterBand::IRasterIO(
@@ -553,13 +593,16 @@ GDALDataset *JP2EmuellaDataset::Open(GDALOpenInfo *openInfo) {
     if (!CodecCallSucceeded(status, rawError, "image inspection"))
         return nullptr;
     if (imageInfo.width == 0 || imageInfo.height == 0 ||
-        imageInfo.width >
-            static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+        imageInfo.width > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
         imageInfo.height >
             static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
-        imageInfo.component_count == 0 || imageInfo.bits_per_sample != 8 ||
+        imageInfo.component_count == 0 ||
+        (imageInfo.bits_per_sample != 8 && imageInfo.bits_per_sample != 16) ||
+        (imageInfo.bits_per_sample == 16 && imageInfo.component_count != 1) ||
         imageInfo.is_signed != 0 ||
-        imageInfo.byte_order != EMUELLA_J2K_ENDIAN_NONE) {
+        imageInfo.byte_order != (imageInfo.bits_per_sample == 8
+                                     ? EMUELLA_J2K_ENDIAN_NONE
+                                     : EMUELLA_J2K_ENDIAN_LITTLE)) {
         CPLError(CE_Failure, CPLE_NotSupported,
                  "JP2Emuella does not support this image geometry");
         return nullptr;
@@ -577,22 +620,25 @@ GDALDataset *JP2EmuellaDataset::Open(GDALOpenInfo *openInfo) {
             inspection.get(), component, &info, &rawError);
         if (!CodecCallSucceeded(status, rawError, "component inspection"))
             return nullptr;
-        if (info.source_component != component || info.bits_per_sample != 8 ||
-            info.is_signed != 0 || info.byte_order != EMUELLA_J2K_ENDIAN_NONE ||
+        if (info.source_component != component ||
+            info.bits_per_sample != imageInfo.bits_per_sample || info.is_signed != 0 ||
+            info.byte_order != imageInfo.byte_order ||
             info.horizontal_separation != 1 || info.vertical_separation != 1 ||
             info.width != imageInfo.width || info.height != imageInfo.height ||
-            (!components.empty() &&
-             (info.x_origin != components.front().x_origin ||
-              info.y_origin != components.front().y_origin))) {
+            (!components.empty() && (info.x_origin != components.front().x_origin ||
+                                     info.y_origin != components.front().y_origin))) {
             CPLError(CE_Failure, CPLE_NotSupported,
-                     "JP2Emuella initially supports only co-sited, unsigned "
-                     "8-bit components with unit separation and full image "
+                     "JP2Emuella supports only co-sited, uniform unsigned "
+                     "8-bit components or one 16-bit component with unit separation "
+                     "and full image "
                      "dimensions");
             return nullptr;
         }
         components.push_back(info);
     }
 
+    dataset->sampleBytes_ = imageInfo.bits_per_sample / 8;
+    dataset->sampleType_ = imageInfo.bits_per_sample == 8 ? GDT_Byte : GDT_UInt16;
     dataset->nRasterXSize = static_cast<int>(imageInfo.width);
     dataset->nRasterYSize = static_cast<int>(imageInfo.height);
     dataset->imageOriginX_ = components.front().x_origin;

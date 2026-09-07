@@ -81,7 +81,7 @@ if(BUILD_TESTING)
         ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
     )
 
-    foreach(rgb_target IN ITEMS jp2emuella_rgb_tests jp2emuella_rgb_benchmark)
+    foreach(rgb_target IN ITEMS jp2emuella_rgb_tests jp2emuella_rgb_benchmark jp2emuella_precision_tests)
         string(REPLACE "jp2emuella_" "" rgb_source "${rgb_target}")
         add_executable(${rgb_target} tests/${rgb_source}.cpp)
         target_compile_features(${rgb_target} PRIVATE cxx_std_17)
@@ -93,9 +93,10 @@ if(BUILD_TESTING)
         )
         target_link_libraries(${rgb_target} PRIVATE GDAL::GDAL Threads::Threads)
     endforeach()
+    add_test(NAME jp2emuella_precision COMMAND jp2emuella_precision_tests)
     add_test(NAME jp2emuella_rgb COMMAND jp2emuella_rgb_tests)
     add_test(NAME jp2emuella_rgb_benchmark_smoke COMMAND jp2emuella_rgb_benchmark 1)
-    set_tests_properties(jp2emuella_rgb jp2emuella_rgb_benchmark_smoke PROPERTIES
+    set_tests_properties(jp2emuella_rgb jp2emuella_rgb_benchmark_smoke jp2emuella_precision PROPERTIES
         ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
     )
 
