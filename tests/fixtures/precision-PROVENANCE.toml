@@ -1,0 +1,76 @@
+schema_version = 1
+origin = "Project-authored deterministic arithmetic images, no external image inputs"
+licence = "MIT"
+recipe = "../generate-precision.rs"
+codec_revision = "b4c4cffa35cbdac0383c2c0fc46ebe8e729f3bfa"
+width = 67
+height = 53
+signed = false
+tile_width = 32
+tile_height = 32
+decomposition_levels = 2
+encoding = "Emuella Part 1 lossless, reversible 5/3; RGB uses reversible MCT"
+oracle = "0 at (0,0), (1<<bits)-1 at (66,52), otherwise (x*997+y*617+x*y*13+component*1237)&((1<<bits)-1)"
+
+[[fixtures]]
+file = "precision-9-1.j2k"
+bits_per_sample = 9
+components = 1
+sha256 = "ac62b1fd9f8bb284482eee7d5462a344cd2b7add483625df4d9e53076e9df5a5"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-10-1.j2k"
+bits_per_sample = 10
+components = 1
+sha256 = "1a95586f548a86d1f720c23e437628f3e163ca299d6b6f1bb8e3f3c86cf7020e"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-11-1.j2k"
+bits_per_sample = 11
+components = 1
+sha256 = "b7105b2f9194154103df9e850cfce97cf2f88e89d96b8fdbec21d044e114aecd"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-12-1.j2k"
+bits_per_sample = 12
+components = 1
+sha256 = "f984a70a2910b0fe95617525436875c0d7da06994652e15b51d1f31b62bbb344"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-13-1.j2k"
+bits_per_sample = 13
+components = 1
+sha256 = "096cbe95fa35b5a2108c71c8cd99b71b8bef409441fdefc5cb6aeb26742fbbc2"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-14-1.j2k"
+bits_per_sample = 14
+components = 1
+sha256 = "1b5deb2cadcea2e52c35625bd2db63efecacfc0417f1a6b0b07165b4c6a4f8bd"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-15-1.j2k"
+bits_per_sample = 15
+components = 1
+sha256 = "bd1d524717f1cd9fdefce3aca6499ffa4ed3f82e5e0ea44249ceceb252272d30"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-16-1.j2k"
+bits_per_sample = 16
+components = 1
+sha256 = "ed9937e1e5b1980d57301c19ad3b555e17300eb52db681b1bc5bddc29e012111"
+qualification = "Exact full and regional GDAL UInt16 samples"
+
+[[fixtures]]
+file = "precision-16-3.j2k"
+bits_per_sample = 16
+components = 3
+sha256 = "e42ebad6bd684123d8a1023e611dc037edd0b3c4e0e860a9321faf3615c25708"
+qualification = "Exact full and regional GDAL UInt16 samples"

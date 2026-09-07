@@ -37,6 +37,22 @@ if(JP2EMUELLA_GDAL_NITF_FIXTURE)
     endif()
 endif()
 
+set(JP2EMUELLA_SATELLITE_NITF_FIXTURE "" CACHE FILEPATH
+    "Authorised in-place CORE3D Jacksonville WV3 PAN NITF qualification source")
+if(JP2EMUELLA_SATELLITE_NITF_FIXTURE)
+    if(NOT JP2EMUELLA_TEST_NITF OR
+       NOT IS_ABSOLUTE "${JP2EMUELLA_SATELLITE_NITF_FIXTURE}" OR
+       NOT EXISTS "${JP2EMUELLA_SATELLITE_NITF_FIXTURE}" OR
+       IS_DIRECTORY "${JP2EMUELLA_SATELLITE_NITF_FIXTURE}")
+        message(FATAL_ERROR "Satellite qualification requires TEST_NITF=ON and an existing absolute source path")
+    endif()
+    file(SHA256 "${JP2EMUELLA_SATELLITE_NITF_FIXTURE}" _satellite_sha256)
+    if(NOT _satellite_sha256 STREQUAL
+       "61c1ba16ff0c7b1788e912cc143ecf966566cd7c092eb14a111e75a185547e4a")
+        message(FATAL_ERROR "Satellite qualification source digest mismatch")
+    endif()
+endif()
+
 find_package(GDAL 3.13 REQUIRED CONFIG)
 find_package(EmuellaJ2K REQUIRED)
 find_package(Threads REQUIRED)
@@ -81,7 +97,7 @@ if(BUILD_TESTING)
         ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
     )
 
-    foreach(rgb_target IN ITEMS jp2emuella_rgb_tests jp2emuella_rgb_benchmark)
+    foreach(rgb_target IN ITEMS jp2emuella_rgb_tests jp2emuella_rgb_benchmark jp2emuella_precision_tests)
         string(REPLACE "jp2emuella_" "" rgb_source "${rgb_target}")
         add_executable(${rgb_target} tests/${rgb_source}.cpp)
         target_compile_features(${rgb_target} PRIVATE cxx_std_17)
@@ -93,9 +109,10 @@ if(BUILD_TESTING)
         )
         target_link_libraries(${rgb_target} PRIVATE GDAL::GDAL Threads::Threads)
     endforeach()
+    add_test(NAME jp2emuella_precision COMMAND jp2emuella_precision_tests)
     add_test(NAME jp2emuella_rgb COMMAND jp2emuella_rgb_tests)
     add_test(NAME jp2emuella_rgb_benchmark_smoke COMMAND jp2emuella_rgb_benchmark 1)
-    set_tests_properties(jp2emuella_rgb jp2emuella_rgb_benchmark_smoke PROPERTIES
+    set_tests_properties(jp2emuella_rgb jp2emuella_rgb_benchmark_smoke jp2emuella_precision PROPERTIES
         ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
     )
 
@@ -110,6 +127,13 @@ if(BUILD_TESTING)
         )
         target_link_libraries(jp2emuella_nitf_tests PRIVATE GDAL::GDAL)
         add_test(NAME jp2emuella_nitf COMMAND jp2emuella_nitf_tests)
+        if(JP2EMUELLA_SATELLITE_NITF_FIXTURE)
+            add_test(NAME jp2emuella_satellite_nitf COMMAND jp2emuella_nitf_tests
+                "${JP2EMUELLA_SATELLITE_NITF_FIXTURE}")
+            set_tests_properties(jp2emuella_satellite_nitf PROPERTIES
+                ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
+                TIMEOUT 180)
+        endif()
         set_tests_properties(jp2emuella_nitf PROPERTIES
             ENVIRONMENT "GDAL_DRIVER_PATH=$<TARGET_FILE_DIR:gdal_JP2Emuella>"
         )

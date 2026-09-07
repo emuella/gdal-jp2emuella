@@ -75,9 +75,9 @@ void Check(bool condition, const std::string &message) {
         throw std::runtime_error(message);
 }
 
-std::vector<std::uint8_t> ReadFixture() {
+std::vector<std::uint8_t> ReadFixture(const char *name = "gray-gradient-17x19.j2k") {
     const std::string path =
-        std::string(JP2EMUELLA_FIXTURE_DIR) + "/gray-gradient-17x19.j2k";
+        std::string(JP2EMUELLA_FIXTURE_DIR) + "/" + name;
     std::ifstream stream(path, std::ios::binary);
     Check(stream.good(), "could not open project-authored fixture");
     return {std::istreambuf_iterator<char>(stream),
@@ -128,15 +128,19 @@ void PutVsiMem(const char *path, const std::vector<std::uint8_t> &bytes) {
 }
 
 std::vector<std::uint8_t>
-BuildNITFC8Fixture(const std::vector<std::uint8_t> &codestream) {
+BuildNITFC8Fixture(const std::vector<std::uint8_t> &codestream,
+                   int width = 17, int height = 19, GDALDataType type = GDT_Byte,
+                   int bands = 1, int bits = 8) {
     constexpr const char *skeletonPath = "/vsimem/jp2emuella-nitf-nc.ntf";
     auto *driver = GetGDALDriverManager()->GetDriverByName("NITF");
     Check(driver != nullptr, "NITF driver is unavailable");
 
     CPLStringList options;
     options.SetNameValue("IC", "NC");
+    options.SetNameValue("ABPP", std::to_string(bits).c_str());
+    options.SetNameValue("IREP", bands == 3 ? "RGB" : "MONO");
     DatasetPtr skeleton(
-        driver->Create(skeletonPath, 17, 19, 1, GDT_Byte, options.List()));
+        driver->Create(skeletonPath, width, height, bands, type, options.List()));
     Check(skeleton != nullptr, "could not create NITF skeleton");
     skeleton.reset();
 
@@ -289,6 +293,50 @@ void TestNITFDecode(const std::vector<std::uint8_t> &fixture) {
     VSIUnlink(path);
 }
 
+void TestPrecisionNITF(int bits, int bands) {
+    const auto name =
+        "precision-" + std::to_string(bits) + "-" + std::to_string(bands) + ".j2k";
+    const auto fixture =
+        BuildNITFC8Fixture(ReadFixture(name.c_str()), 67, 53, GDT_UInt16, bands, bits);
+    constexpr const char *path = "/vsimem/jp2emuella-precision-c8.ntf";
+    PutVsiMem(path, fixture);
+    auto dataset = OpenNITF(path);
+    Check(dataset != nullptr, "UInt16 NITF did not open");
+    CheckNestedJP2Emuella(dataset.get());
+    Check(dataset->GetRasterCount() == bands, "NITF precision band count mismatch");
+    const char *actualBits = dataset->GetMetadataItem("NITF_ABPP");
+    Check(actualBits != nullptr && std::stoi(actualBits) == bits,
+          "NITF actual precision mismatch");
+    for (int component = 0; component < bands; ++component) {
+        auto *band = dataset->GetRasterBand(component + 1);
+        Check(band->GetRasterDataType() == GDT_UInt16,
+              "NITF changed UInt16 sample representation");
+        for (const auto &region :
+             {std::array<int, 4>{29, 27, 9, 11}, std::array<int, 4>{0, 0, 67, 53},
+              std::array<int, 4>{66, 52, 1, 1}}) {
+            const int x = region[0], y = region[1], w = region[2], h = region[3];
+            std::vector<std::uint16_t> samples(static_cast<size_t>(w * h));
+            Check(band->RasterIO(GF_Read, x, y, w, h, samples.data(), w, h, GDT_UInt16,
+                                 2, w * 2, nullptr) == CE_None,
+                  "UInt16 NITF read failed");
+            for (int row = 0; row < h; ++row)
+                for (int col = 0; col < w; ++col) {
+                    const int xx = x + col, yy = y + row;
+                    const auto expected = static_cast<std::uint16_t>(
+                        xx == 0 && yy == 0 ? 0
+                        : xx == 66 && yy == 52
+                            ? (1 << bits) - 1
+                            : (xx * 997 + yy * 617 + xx * yy * 13 + component * 1237) &
+                                  ((1 << bits) - 1));
+                    Check(samples[static_cast<size_t>(row * w + col)] == expected,
+                          "NITF lost UInt16 sample precision");
+                }
+        }
+    }
+    dataset.reset();
+    VSIUnlink(path);
+}
+
 void TestExternalGDALNITF(const char *path) {
     auto dataset = OpenNITF(path);
     Check(dataset != nullptr, "external GDAL NITF fixture did not open");
@@ -296,8 +344,7 @@ void TestExternalGDALNITF(const char *path) {
           "unexpected external fixture outer driver");
     Check(dataset->GetRasterXSize() == 200 && dataset->GetRasterYSize() == 100,
           "unexpected external fixture raster dimensions");
-    Check(dataset->GetRasterCount() == 3,
-          "unexpected external fixture band count");
+    Check(dataset->GetRasterCount() == 3, "unexpected external fixture band count");
     const char *compression = dataset->GetMetadataItem("NITF_IC");
     Check(compression != nullptr && std::string(compression) == "C8",
           "external fixture compression metadata mismatch");
@@ -351,6 +398,95 @@ void TestExternalGDALNITF(const char *path) {
               ", " + std::to_string(edge[1]) + ", " + std::to_string(edge[2]));
 }
 
+void PrintSnapshot(GDALDataset *dataset, const char *stage) {
+    std::cout << "{\"stage\":\"" << stage << "\"";
+    for (const char *key : {"SOURCE_READ_REQUESTS", "SOURCE_BYTES_REQUESTED",
+             "DECODE_COUNT", "WORKSPACE_CREATIONS", "preparation_count",
+             "code_blocks_decoded", "tier1_coefficients", "synthesis_output_samples",
+             "PEAK_output_capacity_bytes", "PEAK_workspace_retained_heap_bytes",
+             "PEAK_full_coefficient_plane_capacity"}) {
+        const char *value = dataset->GetMetadataItem(key, "EMUELLA_DIAGNOSTICS");
+        Check(value != nullptr, "missing real-source diagnostic");
+        std::cout << ",\"" << key << "\":" << std::stoull(value);
+    }
+    std::cout << "}\n";
+}
+
+void TestSatelliteNITF(const char *path) {
+    // The opt-in CMake test verifies the source digest in place. Every sample
+    // buffer is memory-only, bounded by one 1024x1024 source tile.
+    auto outer = OpenNITF(path);
+    Check(outer != nullptr && std::string(outer->GetDriverName()) == "NITF",
+          "satellite NITF did not open");
+    Check(outer->GetRasterXSize() == 43008 && outer->GetRasterYSize() == 43008 &&
+              outer->GetRasterCount() == 1,
+          "satellite source geometry mismatch");
+    const char *precision = outer->GetMetadataItem("NITF_ABPP");
+    Check(precision != nullptr && std::string(precision) == "11",
+          "satellite NITF precision mismatch");
+    Check(outer->GetRasterBand(1)->GetRasterDataType() == GDT_UInt16,
+          "satellite NITF sample type mismatch");
+    const char *nestedName = outer->GetMetadataItem("JPEG2000_DATASET_NAME", "DEBUG");
+    Check(nestedName != nullptr, "satellite nested dataset name missing");
+    const char *allowed[] = {"JP2Emuella", nullptr};
+    const char *options[] = {"DIAGNOSTICS=YES", nullptr};
+    DatasetPtr nested(static_cast<GDALDataset *>(GDALOpenEx(
+        nestedName, GDAL_OF_RASTER | GDAL_OF_READONLY, allowed, options, nullptr)));
+    Check(nested != nullptr && std::string(nested->GetDriverName()) == "JP2Emuella",
+          "satellite embedded codestream did not select JP2Emuella");
+    const char *nativeBits =
+        nested->GetRasterBand(1)->GetMetadataItem("NBITS", "IMAGE_STRUCTURE");
+    Check(nativeBits != nullptr && std::string(nativeBits) == "11",
+          "satellite native precision was lost");
+    PrintSnapshot(nested.get(), "nested_open");
+    constexpr int x = 20000, y = 20000, side = 32, tileSide = 1024;
+    std::array<std::uint16_t, side * side> outerPixels{}, direct{}, repeated{};
+    auto read = [](GDALDataset *dataset, int xx, int yy, int size, std::uint16_t *out) {
+        Check(dataset->GetRasterBand(1)->RasterIO(GF_Read, xx, yy, size, size, out,
+                                                  size, size, GDT_UInt16, 2, size * 2,
+                                                  nullptr) == CE_None,
+              "satellite regional read failed");
+    };
+    read(outer.get(), x, y, side, outerPixels.data());
+    read(nested.get(), x, y, side, direct.data());
+    PrintSnapshot(nested.get(), "nested_region_first");
+    Check(std::stoull(nested->GetMetadataItem("PEAK_output_capacity_bytes",
+                                              "EMUELLA_DIAGNOSTICS")) == side*side*2,
+          "satellite small region allocated more than its output plane");
+    Check(outerPixels == direct, "outer NITF and direct embedded region differ");
+    read(nested.get(), x, y, side, repeated.data());
+    PrintSnapshot(nested.get(), "nested_region_repeat");
+    Check(direct == repeated, "satellite repeated region differs");
+    const int tileX = (x / tileSide) * tileSide, tileY = (y / tileSide) * tileSide;
+    std::vector<std::uint16_t> tile(tileSide * tileSide);
+    read(nested.get(), tileX, tileY, tileSide, tile.data());
+    PrintSnapshot(nested.get(), "nested_complete_tile");
+    for (int row = 0; row < side; ++row)
+        for (int col = 0; col < side; ++col)
+            Check(direct[static_cast<size_t>(row * side + col)] ==
+                      tile[static_cast<size_t>((y - tileY + row) * tileSide + x -
+                                               tileX + col)],
+                  "satellite region and complete containing tile differ");
+    const auto bounds = std::minmax_element(direct.begin(), direct.end());
+    Check(*bounds.first == 160 && *bounds.second == 342,
+          "satellite region range changed from recorded observation");
+    Check(std::stoull(nested->GetMetadataItem("PEAK_output_capacity_bytes",
+                                              "EMUELLA_DIAGNOSTICS")) <=
+              tileSide * tileSide * 2,
+          "satellite output exceeded selected tile");
+    Check(std::stoull(nested->GetMetadataItem("PEAK_workspace_retained_heap_bytes",
+                                              "EMUELLA_DIAGNOSTICS")) <= tileSide*tileSide*8,
+          "satellite retained workspace exceeded selected-tile budget");
+    Check(std::stoull(nested->GetMetadataItem("SOURCE_BYTES_REQUESTED",
+                                              "EMUELLA_DIAGNOSTICS")) < 822909368,
+          "satellite journey requested a full codestream worth of source bytes");
+    std::cout
+        << "{\"outer_driver\":\"NITF\",\"nested_driver\":\"JP2Emuella\","
+           "\"precision\":11,\"region_samples\":1024,\"minimum\":"
+        << *bounds.first << ",\"maximum\":" << *bounds.second
+        << ",\"repeat_exact\":true,\"outer_exact\":true,\"tile_crop_exact\":true}\n";
+}
+
 std::atomic<int> trapIdentifications{0};
 
 int TrapIdentify(GDALOpenInfo *openInfo) {
@@ -392,19 +528,29 @@ void TestNarrowAllowList(const std::vector<std::uint8_t> &fixture) {
     manager->RegisterDriver(emuella);
     VSIUnlink(path);
 
-    Check(dataset == nullptr,
-          "C8 NITF opened without an allowed JPEG 2000 driver");
+    Check(dataset == nullptr, "C8 NITF opened without an allowed JPEG 2000 driver");
     Check(trapIdentifications.load() == 0,
           "NITF asked an unlisted driver to inspect embedded content");
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
     try {
         GDALAllRegister();
         Check(GetGDALDriverManager()->GetDriverByName("JP2Emuella") != nullptr,
               "JP2Emuella plugin did not autoload");
+        if (argc == 2) {
+            // The real-source process must not read or write PAM sidecars.
+            CPLSetConfigOption("GDAL_PAM_ENABLED", "NO");
+            {
+                AlternativeJ2KDriverIsolation isolateAlternatives;
+                TestSatelliteNITF(argv[1]);
+            }
+            GDALDestroyDriverManager();
+            return 0;
+        }
+        Check(argc == 1, "expected zero arguments or one authorised satellite path");
         const auto fixture = BuildNITFC8Fixture(ReadFixture());
         {
             // NITF tries these four drivers before JP2Emuella. Removing them
@@ -412,6 +558,9 @@ int main() {
             // delegation rather than merely proving a separate reopen works.
             AlternativeJ2KDriverIsolation isolateAlternatives;
             TestNITFDecode(fixture);
+            TestPrecisionNITF(11, 1);
+            TestPrecisionNITF(16, 1);
+            TestPrecisionNITF(16, 3);
             TestNarrowAllowList(fixture);
             if (const char *externalFixture =
                     std::getenv("JP2EMUELLA_GDAL_NITF_FIXTURE");

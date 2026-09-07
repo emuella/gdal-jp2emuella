@@ -7,9 +7,13 @@ named `gdal_JP2Emuella.so` and registers the `JP2Emuella` driver through both
 
 This initial driver is deliberately narrow. It opens read-only raw codestreams
 whose first markers are exactly SOC and SIZ (`FF4FFF51`). Every component must
-be unsigned 8-bit, have unit horizontal and vertical separation, have the full
-image dimensions and share an origin. JP2 wrappers and other inputs are not
-identified. Accepted components are exposed as GDAL Byte bands.
+be unsigned 8-bit, or the image must contain exactly one unsigned 9–16-bit
+component or three unsigned 16-bit components. Components must have unit
+horizontal and vertical separation, have the full image dimensions and share
+an origin. JP2 wrappers and other inputs are not identified. Accepted components
+are exposed as GDAL Byte or native-endian UInt16 bands.
+The band `NBITS` metadata retains actual multibyte precision. Intermediate
+9–15-bit RGB, signed components and other component geometries remain excluded.
 
 The plugin uses only public GDAL APIs and `emuella_j2k.h`. Each dataset owns its
 VSI handle for its entire decoder lifetime. Codec positioned reads are bounded,
@@ -22,8 +26,8 @@ callback acquires only the VSI mutex. The workspace and decoder are destroyed
 before the source context and file.
 
 Dataset RasterIO combines up to four distinct bands into one regional codec
-request for matching integer source/buffer windows and Byte output. It preserves
-requested order, including duplicate bands, with deduplication and output
+request for matching integer source/buffer windows and output matching the
+native Byte or UInt16 type. It preserves requested order, including duplicate bands, with deduplication and output
 scatter. Supported positive layouts include planar and pixel-interleaved
 buffers with pixel, row and band padding. Offset arithmetic is bounded before
 pointer arithmetic. A reusable dataset scratch plane supports scatter; a
@@ -44,7 +48,7 @@ close a dataset only after its readers have finished.
 - CMake 3.20 or later and a C++17 compiler
 - Ninja for the documented commands
 - `emuella-j2k-capi` built from exact revision
-  `aa7090c23cce62437cefe5b441e971b1bd4320b5`
+  `3afcfabb24282645c3e101ab3495810d28212dfd`
 
 The Emuella ABI is pre-1.0. The CMake revision check is performed when
 `EmuellaJ2K_SOURCE_DIR` is supplied; callers providing only installed headers
@@ -81,7 +85,15 @@ malformed and unsupported inputs, concurrent reads and open/close lifecycle.
 The RGB suite additionally checks reversible-MCT pixels, full images, band order,
 duplicates, padding guards, negative-stride and type-conversion fallback,
 fractional resampling, dataset progress/cancellation, shared MCT work and
-workspace reuse. A one-iteration benchmark smoke test exercises all nine cells.
+workspace reuse. A one-iteration benchmark smoke test exercises all nine cells. The precision
+suite checks authored tiled unsigned 9–16-bit grayscale and 16-bit RGB pixels,
+unaligned and padded
+buffers, duplicate-band scatter, type conversion, negative strides, block reads,
+workspace reuse and logical source-read counters. The fork-local NITF suite
+also checks exact 11/16-bit grayscale and 16-bit RGB full, tile-crossing and edge
+pixels.
+See the [precision calibration record](docs/precision-calibration.md) for the
+real-source observations and remaining profile gaps.
 
 `scripts/check.sh` requires `EMUELLA_J2K_SOURCE_DIR`. It derives the codec
 library from that checkout and the GDAL prefix from `gdal-config` by default:
@@ -139,6 +151,7 @@ collected by default.
 
 | Field | Meaning and scope |
 |---|---|
+| `SOURCE_READ_REQUESTS` | Valid, non-empty codec source callback requests, with the same inclusion and exclusion rules as `SOURCE_BYTES_REQUESTED`. This is a logical VSI request count, not a physical storage-operation count. |
 | `SOURCE_BYTES_REQUESTED` | Bytes requested by valid, non-empty codec source callbacks, including inspection during open and repeated reads; includes requests that subsequently fail VSI I/O. It excludes GDAL's initial identification reads and is not disk traffic or cache misses. |
 | `DECODE_COUNT`, `preparation_count` | Successful codec region calls and their preparations. Repeated windows prepare again; workspace reuse is not region-plan or decoded-image caching. |
 | `WORKSPACE_CREATIONS` | Successful dataset workspace creations (normally zero before the first decode, then one). |
@@ -221,6 +234,25 @@ The external fixture is optional and is never copied into this project or its
 build tree. Without the path, all default and fork-local checks continue to use
 only project-authored inputs.
 
+An opt-in regional journey uses an existing authorised CORE3D Jacksonville WV3
+PAN NITF. Configuration checks SHA-256
+`61c1ba16ff0c7b1788e912cc143ecf966566cd7c092eb14a111e75a185547e4a`
+in place. Set `JP2EMUELLA_SATELLITE_NITF_FIXTURE=/absolute/path/to/source.NTF`
+alongside `JP2EMUELLA_TEST_NITF=ON` when running `scripts/check.sh`. This adds
+`jp2emuella_satellite_nitf`; CTest verbose output includes aggregate JSON
+observations. It opens the outer NITF with alternative JPEG 2000 drivers
+isolated, preserves 11-bit native precision, and compares the 32×32 window at
+(20000,20000) with a repeat and its containing complete 1024×1024 tile. All
+sample buffers stay in memory and PAM sidecars are disabled. The test does not acquire, copy, save or delete
+the source or its pixels. Supply only an existing source whose use you have
+authorised; the option does not grant rights or accept external terms.
+
+The real-source diagnostic snapshots belong to a separately opened embedded
+`JP2Emuella` dataset. They exclude outer NITF reads and are logical codec/VSI
+requests, not physical storage traffic. The comparisons establish consistency
+within one representation, not independent decoder accuracy or source
+losslessness. See [precision calibration](docs/precision-calibration.md).
+
 The fork change and this integration test are agent-assisted, fork-local work.
 They must not be submitted to OSGeo/GDAL through an agent workflow; GDAL's
 adopted LLM policy requires any possible future upstream contribution to be
@@ -228,12 +260,19 @@ human-authored, understood and disclosed under that policy.
 
 ## Scope and provenance
 
-The test images are generated deterministically by project-authored
-`emuella-j2k-test-support` recipes. Their provenance is recorded beside the
-fixtures. The RGB codestream comes from `native_planes::reversible_mct_region_fixture`
+The original grayscale and RGB test images use project-authored
+`emuella-j2k-test-support` recipes. Their Apache-2.0 provenance is recorded in
+[the grayscale record](tests/fixtures/PROVENANCE.toml) and
+[the RGB record](tests/fixtures/rgb-mct-256x192.PROVENANCE.toml).
+The RGB codestream comes from `native_planes::reversible_mct_region_fixture`
 (`tnsot_one`): 256x192, reversible MCT, five decomposition levels and 19 quality
-layers. Tests calculate its authored RGB formulae independently of decoding. No
-protected corpus data or external implementation source is included.
+layers. Tests calculate its authored RGB formulae independently of decoding.
 
-This project is licensed under the MIT Licence. The generated test codestreams
-are Apache-2.0 as recorded in their provenance files.
+The nine precision fixtures use the local
+[arithmetic generator](tests/generate-precision.rs), with MIT licence, formulae,
+codec revision and digests recorded in
+[their provenance record](tests/fixtures/precision-PROVENANCE.toml).
+No protected corpus data or external implementation source is included.
+
+This project is licensed under the MIT Licence. Each generated test codestream
+retains the licence recorded in its corresponding provenance file.

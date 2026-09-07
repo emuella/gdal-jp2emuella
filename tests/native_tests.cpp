@@ -261,7 +261,7 @@ void TestRejections(const std::vector<std::uint8_t> &fixture) {
 
     auto unsupported = fixture;
     Check(unsupported.size() > 42, "fixture is too short for SIZ mutation");
-    unsupported[42] = 8; // Unsigned 9-bit component in the authored SIZ marker.
+    unsupported[42] = 16; // Unsigned 17-bit component in the authored SIZ marker.
     PutVsiMem("/vsimem/jp2emuella-unsupported.j2k", unsupported);
     CPLErrorReset();
     CPLPushErrorHandler(CPLQuietErrorHandler);
