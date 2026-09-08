@@ -40,6 +40,28 @@ struct DatasetCloser {
 };
 using DatasetPtr = std::unique_ptr<GDALDataset, DatasetCloser>;
 
+class SourceIndexConfig {
+  public:
+    explicit SourceIndexConfig(const char *value) {
+        const char *previous =
+            CPLGetConfigOption("JP2EMUELLA_REQUIRE_SOURCE_INDEX", nullptr);
+        hadPrevious_ = previous != nullptr;
+        if (hadPrevious_)
+            previous_ = previous;
+        CPLSetConfigOption("JP2EMUELLA_REQUIRE_SOURCE_INDEX", value);
+    }
+    ~SourceIndexConfig() {
+        CPLSetConfigOption("JP2EMUELLA_REQUIRE_SOURCE_INDEX",
+                           hadPrevious_ ? previous_.c_str() : nullptr);
+    }
+    SourceIndexConfig(const SourceIndexConfig &) = delete;
+    SourceIndexConfig &operator=(const SourceIndexConfig &) = delete;
+
+  private:
+    bool hadPrevious_ = false;
+    std::string previous_;
+};
+
 class AlternativeJ2KDriverIsolation {
   public:
     AlternativeJ2KDriverIsolation() {
@@ -337,6 +359,143 @@ void TestPrecisionNITF(int bits, int bands) {
     VSIUnlink(path);
 }
 
+std::uint64_t Metric(GDALDataset *dataset, const char *key) {
+    const char *value = dataset->GetMetadataItem(key, "EMUELLA_DIAGNOSTICS");
+    Check(value != nullptr, std::string("missing source-index diagnostic: ") + key);
+    return std::stoull(value);
+}
+
+void TestIndexedNITFRegions() {
+    auto *driver = GetGDALDriverManager()->GetDriverByName("JP2Emuella");
+    const char *capability = driver->GetMetadataItem("JP2EMUELLA_SOURCE_INDEX");
+    Check(capability != nullptr && std::string(capability) == "REQUIRED_SUPPORTED",
+          "plugin does not advertise required source-index support");
+    constexpr const char *path = "/vsimem/jp2emuella-indexed-c8.ntf";
+    PutVsiMem(path, BuildNITFC8Fixture(ReadFixture("precision-16-1.j2k"),
+                                      67, 53, GDT_UInt16, 1, 16));
+    std::array<std::uint64_t, 2> legacySecond{};
+    // NITF does not forward the nested driver's diagnostic domain. Check actual
+    // outer reads, and measure the same embedded source on one diagnostic handle.
+    for (bool indexed : {false, true}) {
+        SourceIndexConfig config(indexed ? "YES" : nullptr);
+        auto outer = OpenNITF(path);
+        Check(outer != nullptr && std::string(outer->GetDriverName()) == "NITF",
+              "source-index NITF did not open");
+        const char *nestedName =
+            outer->GetMetadataItem("JPEG2000_DATASET_NAME", "DEBUG");
+        Check(nestedName != nullptr, "source-index NITF nested name missing");
+        const char *allowed[] = {"JP2Emuella", nullptr};
+        const char *options[] = {"DIAGNOSTICS=YES", nullptr};
+        DatasetPtr nested(static_cast<GDALDataset *>(GDALOpenEx(
+            nestedName, GDAL_OF_RASTER | GDAL_OF_READONLY, allowed, options, nullptr)));
+        Check(nested != nullptr && std::string(nested->GetDriverName()) == "JP2Emuella",
+              "source-index nested dataset did not select JP2Emuella");
+        Check(Metric(nested.get(), "SOURCE_INDEX_REQUIRED") == (indexed ? 1 : 0),
+              "source-index mode differs from the open-time configuration");
+        Check(Metric(nested.get(), "SOURCE_INDEX_MAX_HEADER_BYTES") ==
+                  (indexed ? 16777216 : 0) &&
+                  Metric(nested.get(), "SOURCE_INDEX_MAX_MARKERS") ==
+                  (indexed ? 65536 : 0) &&
+                  Metric(nested.get(), "SOURCE_INDEX_MAX_TILE_PARTS") ==
+                  (indexed ? 65536 : 0),
+              "source-index bounds changed");
+        // Changing the config after open must not change either existing decoder.
+        SourceIndexConfig afterOpen(indexed ? "NO" : "YES");
+        std::array<std::uint64_t, 2> second{};
+        for (int operation = 0; operation < 3; ++operation) {
+            const int x = operation == 0 ? 1 : 35;
+            const int y = operation == 0 ? 1 : 35;
+            constexpr int width = 7, height = 5;
+            std::array<std::uint16_t, width * height> outerPixels{}, nestedPixels{};
+            const std::array<std::uint64_t, 2> before{
+                Metric(nested.get(), "SOURCE_READ_REQUESTS"),
+                Metric(nested.get(), "SOURCE_BYTES_REQUESTED")};
+            auto read = [&](GDALDataset *dataset, std::uint16_t *pixels) {
+                Check(dataset->GetRasterBand(1)->RasterIO(
+                          GF_Read, x, y, width, height, pixels, width, height,
+                          GDT_UInt16, 2, width * 2, nullptr) == CE_None,
+                      "source-index regional read failed");
+            };
+            read(outer.get(), outerPixels.data());
+            read(nested.get(), nestedPixels.data());
+            for (int row = 0; row < height; ++row)
+                for (int col = 0; col < width; ++col) {
+                    const int xx = x + col, yy = y + row;
+                    const auto expected = static_cast<std::uint16_t>(
+                        (xx * 997 + yy * 617 + xx * yy * 13) & 65535);
+                    const auto offset = static_cast<std::size_t>(row * width + col);
+                    Check(outerPixels[offset] == expected &&
+                              nestedPixels[offset] == expected,
+                          "source-index NITF region differs from authored oracle");
+                }
+            const std::array<std::uint64_t, 2> cost{
+                Metric(nested.get(), "SOURCE_READ_REQUESTS") - before[0],
+                Metric(nested.get(), "SOURCE_BYTES_REQUESTED") - before[1]};
+            if (operation == 1)
+                second = cost;
+            if (operation == 2)
+                Check(cost == second, "repeated window changed source request cost");
+        }
+        Check(Metric(nested.get(), "DECODE_COUNT") == 3 &&
+                  Metric(nested.get(), "WORKSPACE_CREATIONS") == 1,
+              "source-index regions did not reuse one dataset workspace");
+        if (!indexed)
+            legacySecond = second;
+        else {
+            Check(second[0] < legacySecond[0] && second[1] < legacySecond[1],
+                  "required index did not remove repeated source-header traversal");
+            std::cout << "{\"source_index_required\":true,\"legacy_second_reads\":"
+                      << legacySecond[0] << ",\"indexed_second_reads\":" << second[0]
+                      << ",\"legacy_second_bytes\":" << legacySecond[1]
+                      << ",\"indexed_second_bytes\":" << second[1] << "}\n";
+        }
+    }
+    VSIUnlink(path);
+}
+
+void TestRequiredIndexNoFallback() {
+    auto codestream = ReadFixture();
+    // Project-authored binary COM segments exceed only the opt-in header-byte
+    // ceiling. Insert them after SIZ, without changing the encoded samples.
+    Check(codestream.size() > 6, "authored source is truncated");
+    const auto sizLength = static_cast<std::size_t>(codestream[4]) * 256 + codestream[5];
+    const auto insertion = 4 + sizLength;
+    Check(insertion <= codestream.size(), "authored SIZ length is invalid");
+    std::vector<std::uint8_t> comments;
+    constexpr std::size_t segmentSize = 65537;
+    comments.resize(segmentSize * 257, 0);
+    for (std::size_t offset = 0; offset < comments.size(); offset += segmentSize) {
+        comments[offset] = 0xff;
+        comments[offset + 1] = 0x64;
+        comments[offset + 2] = 0xff;
+        comments[offset + 3] = 0xff;
+    }
+    codestream.insert(codestream.begin() + static_cast<std::ptrdiff_t>(insertion),
+                      comments.begin(), comments.end());
+    constexpr const char *path = "/vsimem/jp2emuella-index-limit-c8.ntf";
+    PutVsiMem(path, BuildNITFC8Fixture(codestream));
+    {
+        SourceIndexConfig config(nullptr);
+        auto dataset = OpenNITF(path);
+        Check(dataset != nullptr, "default mode narrowed legacy header admission");
+        std::uint8_t pixel = 0;
+        Check(dataset->GetRasterBand(1)->RasterIO(GF_Read, 3, 7, 1, 1, &pixel,
+                  1, 1, GDT_Byte, 1, 1, nullptr) == CE_None && pixel == Expected(3, 7),
+              "default mode failed legacy oversized-comment decode");
+    }
+    {
+        SourceIndexConfig config("YES");
+        CPLPushErrorHandler(CPLQuietErrorHandler);
+        auto dataset = OpenNITF(path);
+        std::uint8_t pixel = 0;
+        const bool rejected = !dataset || dataset->GetRasterBand(1)->RasterIO(
+            GF_Read, 3, 7, 1, 1, &pixel, 1, 1, GDT_Byte, 1, 1, nullptr) != CE_None;
+        CPLPopErrorHandler();
+        Check(rejected, "required source index silently fell back after its budget failed");
+    }
+    VSIUnlink(path);
+}
+
 void TestExternalGDALNITF(const char *path) {
     auto dataset = OpenNITF(path);
     Check(dataset != nullptr, "external GDAL NITF fixture did not open");
@@ -561,6 +720,8 @@ int main(int argc, char **argv) {
             TestPrecisionNITF(11, 1);
             TestPrecisionNITF(16, 1);
             TestPrecisionNITF(16, 3);
+            TestIndexedNITFRegions();
+            TestRequiredIndexNoFallback();
             TestNarrowAllowList(fixture);
             if (const char *externalFixture =
                     std::getenv("JP2EMUELLA_GDAL_NITF_FIXTURE");

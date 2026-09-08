@@ -23,7 +23,7 @@ evidence; the codec owns sample, transform and codestream semantics.
 | Codec `b4c4cffa35cbdac0383c2c0fc46ebe8e729f3bfa`, current plugin candidate | Codec owner supplies genuine 9–15-bit grayscale encoding and RGB16 regional MCT. All authored grayscale9–16 and RGB16 plugin tests pass; the supplied real11 NITF journey passes. Retain the wider validated candidate. |
 
 The final consumed codec is merged revision
-`3afcfabb24282645c3e101ab3495810d28212dfd`; calibration checkpoints above remain
+`2568f1c40c83a40f527c7ee8f1600af511e046d0`; calibration checkpoints above remain
 historical observations. The consumed codec is rebuilt in release mode from exact clean source.
 The maintained GDAL fork is
 `1af54d99959f3b62ba10451a357a969075374663` (development version 3.14), with its
@@ -114,6 +114,90 @@ Intermediate-precision RGB, other multispectral layouts and big-endian host
 execution remain unqualified. Neither this single real image nor authored
 samples prove universal satellite interoperability, independent decoder
 agreement, lossy preparation, physical storage behaviour or browser delivery.
-The C ABI still prepares each region, reflected by identical first/repeat
-request costs. Persistent Part 1 index reuse through the source-backed C ABI remains
-codec work; the separate Rust HT viewing profile now has reusable sparse indexes. The broader viewer and detection proof is not complete.
+The real-source observations above used the legacy source-backed decoder. It
+still prepares each region and repeats source-header traversal, reflected by
+the identical first/repeat request costs. Those historical numbers do not
+measure the opt-in indexed mode described below. The broader viewer and
+detection proof requires separate composed qualification.
+
+## Opt-in persistent Part 1 source index
+
+`JP2EMUELLA_REQUIRE_SOURCE_INDEX=YES`, set before open, selects the additive
+indexed C ABI constructor for the lifetime of that dataset, including an
+embedded NITF image. Although the C ABI constructor is lazy, plugin inspection
+constructs the retained index during GDAL open. Header I/O, retained allocation
+and construction failures occur then; later regional reads reuse the index.
+Explicit construction ceilings are 16 MiB of retained marker bytes, 65,536 markers and 65,536 tile parts. An
+unsupported profile or budget failure is an error without legacy fallback. Default opens
+keep the existing decoder and admission. The index avoids repeated
+whole-source header traversal; it does not cache decoded regions or eliminate
+selected packet reads and regional preparation. Retained marker bytes exclude
+packet bodies, index descriptors, tile metadata and allocator overhead. The
+indexed scanner requires bounded nonzero `Psot` values and a validated complete
+tile-part sequence; packet decoding retains the codec's existing profile
+requirements. Per-region geometry and sequence bookkeeping can still scale
+with the total tile count.
+
+The registered driver advertises
+`JP2EMUELLA_SOURCE_INDEX=REQUIRED_SUPPORTED`; preparation callers must check
+this capability before relying on the config option. Diagnostic nested datasets
+report `SOURCE_INDEX_REQUIRED` and the three `SOURCE_INDEX_MAX_*` ceilings.
+These report mode and construction limits, not index heap measurements. NITF
+does not forward the nested diagnostic domain, so logical callback counts are
+collected from a separately opened embedded handle and exclude outer NITF I/O.
+
+The authored NITF test reads disjoint 7×5 regions at (1,1) and (35,35), then
+repeats the second region on one open dataset. Both outer NITF and direct
+embedded UInt16 samples must match the independent arithmetic oracle.
+Indexed callback requests and bytes for the second region must be lower than
+the same operation in legacy mode, and the repeat must retain that cost with
+one workspace. Changing the option after open must leave existing decoders in
+their original mode. A separate authored input adds valid COM segments beyond
+16 MiB: the default path must decode it, and the required path must reject it
+without fallback. This protects compatibility and the opt-in budget contract.
+
+Run these checks against the exact codec source and maintained GDAL prefix:
+
+```sh
+JP2EMUELLA_TEST_NITF=ON \
+GDAL_CONFIG=/path/to/emuella-gdal-prefix/bin/gdal-config \
+GDAL_PREFIX=/path/to/emuella-gdal-prefix \
+EMUELLA_J2K_SOURCE_DIR=/path/to/emuella-j2k \
+./scripts/check.sh
+ctest --test-dir build -R '^jp2emuella_nitf$' -V
+```
+
+The source-index probe prints aggregate legacy/indexed callback costs. It
+uses only project-authored samples and creates no protected-image derivatives.
+Real-scene indexed ingestion and browser delivery are not established by this
+adapter test.
+
+## Locked independent NITF pixel comparison
+
+The optional [standard-library comparator](../tests/check-independent-nitf.py)
+consumes the five small `jpeg-2000/independent-nitf` cases owned by
+`emuella-testdata` revision `2d519ddaf019f10b9e409ea3338d395438486647`.
+Pinned owner checker, recipe, manifest and provenance hashes bind both the
+complete fixture inventory and its genuine precision/coding profiles. The
+owner's scalar oracle supplies lossless reference samples at runtime. The
+supplied lossy PGM must match the owner's normalised independent OpenJPEG pixel
+digest before any comparison. Fixture and oracle semantics remain with the
+test-data repository; no fixture payload is included here.
+
+The comparator explicitly registers the supplied GDAL NITF driver and plugin
+through public exports and checks codec symbol binding against the supplied
+library. Only NITF and JP2Emuella may be registered. It requires
+`REQUIRED_SUPPORTED`, sets `JP2EMUELLA_REQUIRE_SOURCE_INDEX=YES` before open,
+checks C8/ABPP and native types, and verifies nested NBITS and indexed mode.
+Complete outer NITF band reads cover all locked samples, including both tiles
+of the 1057×65 PAN cases. The four reversible cases require zero pixel error;
+the irreversible U11 case permits peak error at most one against the independent
+decoded reference. Source-oracle errors are reported separately from errors
+against that lossy reference.
+
+The [README command](../README.md#fork-local-nitf-integration) accepts explicit
+binary, owner, pack and reference paths and an exclusively created JSON result.
+The result retains exact source and binary SHA-256 identities, the comparator
+identity, sample counts, peak/squared errors, mismatch counts and normalised
+decoded hashes. It does not prove large-image memory or I/O bounds, independent
+autoload, NPJE conformance or original satellite-product qualification.

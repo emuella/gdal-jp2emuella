@@ -20,6 +20,9 @@
 namespace {
 
 constexpr const char *DRIVER_NAME = "JP2Emuella";
+constexpr std::uint64_t SOURCE_INDEX_MAX_HEADER_BYTES = 16 * 1024 * 1024;
+constexpr std::uint32_t SOURCE_INDEX_MAX_MARKERS = 65536;
+constexpr std::uint32_t SOURCE_INDEX_MAX_TILE_PARTS = 65536;
 
 template <typename T, void (*Destroy)(T *)> struct HandleDeleter {
     void operator()(T *handle) const noexcept { Destroy(handle); }
@@ -94,6 +97,7 @@ class JP2EmuellaDataset final : public GDALPamDataset {
     std::vector<std::uint8_t> scatterPlane_;
     std::uint64_t scatterGrowths_ = 0;
     bool diagnostics_ = false;
+    bool requireSourceIndex_ = false;
     std::uint64_t sourceBytes_ = 0;
     std::uint64_t sourceReads_ = 0;
     int sampleBytes_ = 1;
@@ -171,6 +175,13 @@ class JP2EmuellaDataset final : public GDALPamDataset {
         set("SCHEMA_VERSION", 1);
         set("SOURCE_BYTES_REQUESTED", sourceBytes_);
         set("SOURCE_READ_REQUESTS", sourceReads_);
+        set("SOURCE_INDEX_REQUIRED", requireSourceIndex_ ? 1 : 0);
+        set("SOURCE_INDEX_MAX_HEADER_BYTES",
+            requireSourceIndex_ ? SOURCE_INDEX_MAX_HEADER_BYTES : 0);
+        set("SOURCE_INDEX_MAX_MARKERS",
+            requireSourceIndex_ ? SOURCE_INDEX_MAX_MARKERS : 0);
+        set("SOURCE_INDEX_MAX_TILE_PARTS",
+            requireSourceIndex_ ? SOURCE_INDEX_MAX_TILE_PARTS : 0);
         set("DECODE_COUNT", decodeCount_);
         set("WORKSPACE_CREATIONS", workspaceCreations_);
         set("SCATTER_GROWTH_REQUESTS", scatterGrowths_);
@@ -571,8 +582,22 @@ GDALDataset *JP2EmuellaDataset::Open(GDALOpenInfo *openInfo) {
                                        "DIAGNOSTICS", "NO")));
     EmuellaJ2kDecoder *rawDecoder = nullptr;
     EmuellaJ2kError *rawError = nullptr;
-    auto status =
-        emuella_j2k_decoder_create(&dataset->source_, &rawDecoder, &rawError);
+    dataset->requireSourceIndex_ = CPLTestBool(
+        CPLGetConfigOption("JP2EMUELLA_REQUIRE_SOURCE_INDEX", "NO"));
+    EmuellaJ2kStatus status;
+    if (dataset->requireSourceIndex_) {
+        EmuellaJ2kSourceIndexOptionsV0 options{};
+        options.struct_size = sizeof(options);
+        options.abi_version = EMUELLA_J2K_ABI_VERSION;
+        options.max_header_bytes = SOURCE_INDEX_MAX_HEADER_BYTES;
+        options.max_markers = SOURCE_INDEX_MAX_MARKERS;
+        options.max_tile_parts = SOURCE_INDEX_MAX_TILE_PARTS;
+        status = emuella_j2k_decoder_create_indexed(
+            &dataset->source_, &options, &rawDecoder, &rawError);
+    } else {
+        status = emuella_j2k_decoder_create(
+            &dataset->source_, &rawDecoder, &rawError);
+    }
     DecoderPtr decoder(rawDecoder);
     if (!CodecCallSucceeded(status, rawError, "decoder creation"))
         return nullptr;
@@ -675,6 +700,7 @@ extern "C" CPL_DLL void GDALRegister_JP2Emuella() {
     driver->SetMetadataItem(GDAL_DCAP_RASTER, "YES");
     driver->SetMetadataItem(GDAL_DCAP_OPEN, "YES");
     driver->SetMetadataItem(GDAL_DCAP_VIRTUALIO, "YES");
+    driver->SetMetadataItem("JP2EMUELLA_SOURCE_INDEX", "REQUIRED_SUPPORTED");
     driver->SetMetadataItem(GDAL_DMD_LONGNAME,
                             "JPEG 2000 Part 1 (Emuella experimental decoder)");
     driver->SetMetadataItem(GDAL_DMD_EXTENSIONS, "j2k j2c jpc");
