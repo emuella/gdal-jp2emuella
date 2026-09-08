@@ -114,6 +114,58 @@ Intermediate-precision RGB, other multispectral layouts and big-endian host
 execution remain unqualified. Neither this single real image nor authored
 samples prove universal satellite interoperability, independent decoder
 agreement, lossy preparation, physical storage behaviour or browser delivery.
-The C ABI still prepares each region, reflected by identical first/repeat
-request costs. Persistent Part 1 index reuse through the source-backed C ABI remains
-codec work; the separate Rust HT viewing profile now has reusable sparse indexes. The broader viewer and detection proof is not complete.
+The real-source observations above used the legacy source-backed decoder. It
+still prepares each region and repeats source-header traversal, reflected by
+the identical first/repeat request costs. Those historical numbers do not
+measure the opt-in indexed mode described below. The broader viewer and
+detection proof requires separate composed qualification.
+
+## Opt-in persistent Part 1 source index
+
+`JP2EMUELLA_REQUIRE_SOURCE_INDEX=YES`, set before open, selects the additive
+indexed C ABI constructor for the lifetime of that dataset, including an
+embedded NITF image. Its lazy retained index has explicit construction ceilings
+of 16 MiB of retained marker bytes, 65,536 markers and 65,536 tile parts. An
+unsupported profile or budget failure is an error without legacy fallback. Default opens
+keep the existing decoder and admission. The index avoids repeated
+whole-source header traversal; it does not cache decoded regions or eliminate
+selected packet reads and regional preparation. Retained marker bytes exclude
+packet bodies, index descriptors, tile metadata and allocator overhead. The
+indexed scanner requires bounded nonzero `Psot` values and a validated complete
+tile-part sequence; packet decoding retains the codec's existing profile
+requirements. Per-region geometry and sequence bookkeeping can still scale
+with the total tile count.
+
+The registered driver advertises
+`JP2EMUELLA_SOURCE_INDEX=REQUIRED_SUPPORTED`; preparation callers must check
+this capability before relying on the config option. Diagnostic nested datasets
+report `SOURCE_INDEX_REQUIRED` and the three `SOURCE_INDEX_MAX_*` ceilings.
+These report mode and construction limits, not index heap measurements. NITF
+does not forward the nested diagnostic domain, so logical callback counts are
+collected from a separately opened embedded handle and exclude outer NITF I/O.
+
+The authored NITF test reads disjoint 7×5 regions at (1,1) and (35,35), then
+repeats the second region on one open dataset. Both outer NITF and direct
+embedded UInt16 samples must match the independent arithmetic oracle.
+Indexed callback requests and bytes for the second region must be lower than
+the same operation in legacy mode, and the repeat must retain that cost with
+one workspace. Changing the option after open must leave existing decoders in
+their original mode. A separate authored input adds valid COM segments beyond
+16 MiB: the default path must decode it, and the required path must reject it
+without fallback. This protects compatibility and the opt-in budget contract.
+
+Run these checks against the exact codec source and maintained GDAL prefix:
+
+```sh
+JP2EMUELLA_TEST_NITF=ON \
+GDAL_CONFIG=/path/to/emuella-gdal-prefix/bin/gdal-config \
+GDAL_PREFIX=/path/to/emuella-gdal-prefix \
+EMUELLA_J2K_SOURCE_DIR=/path/to/emuella-j2k \
+./scripts/check.sh
+ctest --test-dir build -R '^jp2emuella_nitf$' -V
+```
+
+The source-index probe prints aggregate legacy/indexed callback costs. It
+uses only project-authored samples and creates no protected-image derivatives.
+Real-scene indexed ingestion and browser delivery are not established by this
+adapter test.

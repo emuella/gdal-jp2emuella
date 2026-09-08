@@ -42,6 +42,40 @@ matching direct reads are serialised and tested. This does not establish general
 thread safety for GDAL metadata, block-cache operations or dataset destruction;
 close a dataset only after its readers have finished.
 
+## Required source index
+
+Set the GDAL configuration option `JP2EMUELLA_REQUIRE_SOURCE_INDEX=YES` before
+opening a dataset to require the codec's persistent Part 1 source index. This
+also reaches the nested plugin when the maintained GDAL fork opens an `IC=C8`
+NITF. The option is captured at open and applies for that dataset's lifetime.
+The default remains the legacy decoder with its existing format admission.
+
+The required mode uses explicit ceilings of 16 MiB of retained marker bytes,
+65,536 markers and 65,536 tile parts. The index is built lazily on first regional
+decode and retained by the decoder for later windows. Unsupported indexed
+profiles or exhausted index budgets produce an error; this mode never retries
+with the legacy decoder. The budgets do not bound total process memory or
+decoded sample buffers. Marker bytes omit packet bodies and exclude index
+descriptors, tile metadata and allocator overhead. The indexed scanner requires
+nonzero bounded `Psot` values and a complete validated tile-part sequence;
+construction alone does not establish packet decode support. Regional
+preparation and selected packet reads still occur for every decode; the index
+avoids repeated whole-source header walks.
+Per-region geometry and sequence bookkeeping can still scale with tile count.
+
+Callers requiring this behaviour must check that the registered `JP2Emuella`
+driver has metadata `JP2EMUELLA_SOURCE_INDEX=REQUIRED_SUPPORTED` before setting
+the option and opening the source. This rejects older plugins that would ignore
+the configuration option. With `DIAGNOSTICS=YES`, the nested dataset reports
+the selected mode and budgets in `EMUELLA_DIAGNOSTICS`. NITF does not forward
+that domain; open its `JPEG2000_DATASET_NAME` from the `DEBUG` domain separately
+when collecting nested source-callback observations.
+
+```sh
+GDAL_DRIVER_PATH=/path/to/plugin-build \
+  gdalinfo --config JP2EMUELLA_REQUIRE_SOURCE_INDEX YES -checksum input.ntf
+```
+
 ## Requirements
 
 - GDAL 3.13 (development files and runtime)
@@ -152,6 +186,8 @@ collected by default.
 | Field | Meaning and scope |
 |---|---|
 | `SOURCE_READ_REQUESTS` | Valid, non-empty codec source callback requests, with the same inclusion and exclusion rules as `SOURCE_BYTES_REQUESTED`. This is a logical VSI request count, not a physical storage-operation count. |
+| `SOURCE_INDEX_REQUIRED` | `1` when the dataset selected the required-index decoder at open; `0` for legacy mode. This reports the selected mode, not whether lazy index construction has occurred. |
+| `SOURCE_INDEX_MAX_HEADER_BYTES`, `SOURCE_INDEX_MAX_MARKERS`, `SOURCE_INDEX_MAX_TILE_PARTS` | Required-mode construction ceilings: 16,777,216 bytes, 65,536 markers and 65,536 tile parts. All three are zero in legacy mode. These are not measurements of retained heap capacity. |
 | `SOURCE_BYTES_REQUESTED` | Bytes requested by valid, non-empty codec source callbacks, including inspection during open and repeated reads; includes requests that subsequently fail VSI I/O. It excludes GDAL's initial identification reads and is not disk traffic or cache misses. |
 | `DECODE_COUNT`, `preparation_count` | Successful codec region calls and their preparations. Repeated windows prepare again; workspace reuse is not region-plan or decoded-image caching. |
 | `WORKSPACE_CREATIONS` | Successful dataset workspace creations (normally zero before the first decode, then one). |
