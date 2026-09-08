@@ -124,8 +124,10 @@ detection proof requires separate composed qualification.
 
 `JP2EMUELLA_REQUIRE_SOURCE_INDEX=YES`, set before open, selects the additive
 indexed C ABI constructor for the lifetime of that dataset, including an
-embedded NITF image. Its lazy retained index has explicit construction ceilings
-of 16 MiB of retained marker bytes, 65,536 markers and 65,536 tile parts. An
+embedded NITF image. Although the C ABI constructor is lazy, plugin inspection
+constructs the retained index during GDAL open. Header I/O, retained allocation
+and construction failures occur then; later regional reads reuse the index.
+Explicit construction ceilings are 16 MiB of retained marker bytes, 65,536 markers and 65,536 tile parts. An
 unsupported profile or budget failure is an error without legacy fallback. Default opens
 keep the existing decoder and admission. The index avoids repeated
 whole-source header traversal; it does not cache decoded regions or eliminate

@@ -51,9 +51,11 @@ NITF. The option is captured at open and applies for that dataset's lifetime.
 The default remains the legacy decoder with its existing format admission.
 
 The required mode uses explicit ceilings of 16 MiB of retained marker bytes,
-65,536 markers and 65,536 tile parts. The index is built lazily on first regional
-decode and retained by the decoder for later windows. Unsupported indexed
-profiles or exhausted index budgets produce an error; this mode never retries
+65,536 markers and 65,536 tile parts. The C ABI constructor is lazy, but the
+plugin inspects the decoder during GDAL open, constructing the index then and
+retaining it for later windows. Header I/O, retained allocation and construction
+failures therefore occur at open. Unsupported indexed profiles or exhausted
+index budgets produce an error; this mode never retries
 with the legacy decoder. The budgets do not bound total process memory or
 decoded sample buffers. Marker bytes omit packet bodies and exclude index
 descriptors, tile metadata and allocator overhead. The indexed scanner requires
@@ -186,7 +188,7 @@ collected by default.
 | Field | Meaning and scope |
 |---|---|
 | `SOURCE_READ_REQUESTS` | Valid, non-empty codec source callback requests, with the same inclusion and exclusion rules as `SOURCE_BYTES_REQUESTED`. This is a logical VSI request count, not a physical storage-operation count. |
-| `SOURCE_INDEX_REQUIRED` | `1` when the dataset selected the required-index decoder at open; `0` for legacy mode. This reports the selected mode, not whether lazy index construction has occurred. |
+| `SOURCE_INDEX_REQUIRED` | `1` when the dataset selected the required-index decoder at open; `0` for legacy mode. Successful required-mode open has already constructed the index through decoder inspection. |
 | `SOURCE_INDEX_MAX_HEADER_BYTES`, `SOURCE_INDEX_MAX_MARKERS`, `SOURCE_INDEX_MAX_TILE_PARTS` | Required-mode construction ceilings: 16,777,216 bytes, 65,536 markers and 65,536 tile parts. All three are zero in legacy mode. These are not measurements of retained heap capacity. |
 | `SOURCE_BYTES_REQUESTED` | Bytes requested by valid, non-empty codec source callbacks, including inspection during open and repeated reads; includes requests that subsequently fail VSI I/O. It excludes GDAL's initial identification reads and is not disk traffic or cache misses. |
 | `DECODE_COUNT`, `preparation_count` | Successful codec region calls and their preparations. Repeated windows prepare again; workspace reuse is not region-plan or decoded-image caching. |
