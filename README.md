@@ -82,7 +82,7 @@ GDAL_DRIVER_PATH=/path/to/plugin-build \
 - CMake 3.20 or later and a C++17 compiler
 - Ninja for the documented commands
 - `emuella-j2k-capi` built from exact revision
-  `3afcfabb24282645c3e101ab3495810d28212dfd`
+  `2568f1c40c83a40f527c7ee8f1600af511e046d0`
 
 The Emuella ABI is pre-1.0. The CMake revision check is performed when
 `EmuellaJ2K_SOURCE_DIR` is supplied; callers providing only installed headers
@@ -269,6 +269,37 @@ EMUELLA_J2K_SOURCE_DIR=/path/to/emuella-j2k \
 The external fixture is optional and is never copied into this project or its
 build tree. Without the path, all default and fork-local checks continue to use
 only project-authored inputs.
+
+An optional complete pixel comparison consumes the five locked small NITF
+fixtures from `emuella-testdata` revision
+`2d519ddaf019f10b9e409ea3338d395438486647`. It needs Python 3.11 or newer, without
+NumPy or GDAL Python bindings. Generate the lossy PGM reference using the
+[fixture owner's independent OpenJPEG check](https://github.com/emuella/emuella-testdata/blob/2d519ddaf019f10b9e409ea3338d395438486647/recipes/independent-nitf-v1.md#verification-and-independent-pixels),
+then pass existing absolute paths and a new JSON output path:
+
+```sh
+python3 tests/check-independent-nitf.py \
+  --gdal-library /path/to/gdal-prefix/lib/libgdal.so \
+  --codec-library /path/to/codec-build/libemuella_j2k_capi.so \
+  --plugin-library /path/to/plugin-build/gdal_JP2Emuella.so \
+  --testdata-source /path/to/emuella-testdata \
+  --input-pack /path/to/emuella-testdata/generated/jpeg-2000/independent-nitf \
+  --lossy-reference /path/to/openjpeg-check/pan11-lossy.pgm \
+  --output /path/to/scratch/independent-nitf-result.json
+```
+
+Put the matching GDAL and codec directories before other dependency prefixes
+on the runtime library search path. This comparator explicitly registers the
+supplied plugin through its public entry point; the canonical installation
+check separately proves autoload. It verifies the owner contract and fixture
+hashes, actual SIZ/COD precision and coding parameters, the normalised lossy
+reference digest, the required-index capability, native sample types and
+outer NITF delegation with only NITF and JP2Emuella registered. Four lossless
+cases require exact agreement with the owner's scalar oracle. The lossy case
+allows peak error at most one against the locked independent decoded reference.
+JSON records binary, input and reference identities and all measured aggregate
+errors, including failures. This check accepts only the locked small pack;
+it performs no acquisition or large-image qualification and saves no pixels.
 
 An opt-in regional journey uses an existing authorised CORE3D Jacksonville WV3
 PAN NITF. Configuration checks SHA-256

@@ -23,7 +23,7 @@ evidence; the codec owns sample, transform and codestream semantics.
 | Codec `b4c4cffa35cbdac0383c2c0fc46ebe8e729f3bfa`, current plugin candidate | Codec owner supplies genuine 9–15-bit grayscale encoding and RGB16 regional MCT. All authored grayscale9–16 and RGB16 plugin tests pass; the supplied real11 NITF journey passes. Retain the wider validated candidate. |
 
 The final consumed codec is merged revision
-`3afcfabb24282645c3e101ab3495810d28212dfd`; calibration checkpoints above remain
+`2568f1c40c83a40f527c7ee8f1600af511e046d0`; calibration checkpoints above remain
 historical observations. The consumed codec is rebuilt in release mode from exact clean source.
 The maintained GDAL fork is
 `1af54d99959f3b62ba10451a357a969075374663` (development version 3.14), with its
@@ -169,3 +169,33 @@ The source-index probe prints aggregate legacy/indexed callback costs. It
 uses only project-authored samples and creates no protected-image derivatives.
 Real-scene indexed ingestion and browser delivery are not established by this
 adapter test.
+
+## Locked independent NITF pixel comparison
+
+The optional [standard-library comparator](../tests/check-independent-nitf.py)
+consumes the five small `jpeg-2000/independent-nitf` cases owned by
+`emuella-testdata` revision `2d519ddaf019f10b9e409ea3338d395438486647`.
+Pinned owner checker, recipe, manifest and provenance hashes bind both the
+complete fixture inventory and its genuine precision/coding profiles. The
+owner's scalar oracle supplies lossless reference samples at runtime. The
+supplied lossy PGM must match the owner's normalised independent OpenJPEG pixel
+digest before any comparison. Fixture and oracle semantics remain with the
+test-data repository; no fixture payload is included here.
+
+The comparator explicitly registers the supplied GDAL NITF driver and plugin
+through public exports and checks codec symbol binding against the supplied
+library. Only NITF and JP2Emuella may be registered. It requires
+`REQUIRED_SUPPORTED`, sets `JP2EMUELLA_REQUIRE_SOURCE_INDEX=YES` before open,
+checks C8/ABPP and native types, and verifies nested NBITS and indexed mode.
+Complete outer NITF band reads cover all locked samples, including both tiles
+of the 1057×65 PAN cases. The four reversible cases require zero pixel error;
+the irreversible U11 case permits peak error at most one against the independent
+decoded reference. Source-oracle errors are reported separately from errors
+against that lossy reference.
+
+The [README command](../README.md#fork-local-nitf-integration) accepts explicit
+binary, owner, pack and reference paths and an exclusively created JSON result.
+The result retains exact source and binary SHA-256 identities, the comparator
+identity, sample counts, peak/squared errors, mismatch counts and normalised
+decoded hashes. It does not prove large-image memory or I/O bounds, independent
+autoload, NPJE conformance or original satellite-product qualification.
