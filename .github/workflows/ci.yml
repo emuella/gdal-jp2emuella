@@ -25,7 +25,7 @@ jobs:
           ref: 2568f1c40c83a40f527c7ee8f1600af511e046d0
           path: emuella-j2k
 
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
 
       - uses: prefix-dev/setup-pixi@v0.9.1
         with:
@@ -37,7 +37,7 @@ jobs:
 
       - name: Build the codec C ABI
         working-directory: emuella-j2k
-        run: cargo +1.98.1 build --locked --release -p emuella-j2k-capi
+        run: cargo +1.99.0 build --locked --release -p emuella-j2k-capi
 
       - name: Build, test and audit the installed module
         run: |

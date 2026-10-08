@@ -94,12 +94,12 @@ and a library are responsible for establishing their provenance.
 
 Build the codec first:
 
-Development and CI explicitly select Rust 1.98.1 for this build, including
+Development and CI explicitly select Rust 1.99.0 for this build, including
 when the retained historical codec revision has a different toolchain pin.
 
 ```sh
 cd /path/to/emuella-j2k
-cargo +1.98.1 build --locked --release -p emuella-j2k-capi
+cargo +1.99.0 build --locked --release -p emuella-j2k-capi
 ```
 
 Then configure this plugin. The cache inputs permit non-standard installations:
